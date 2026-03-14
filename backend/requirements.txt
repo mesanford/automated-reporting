@@ -1,0 +1,12 @@
+fastapi
+uvicorn
+pandas
+google-generativeai
+python-multipart
+python-dotenv
+sqlalchemy
+psycopg2-binary
+cryptography
+httpx
+google-ads
+bingads
