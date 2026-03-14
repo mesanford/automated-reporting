@@ -1,6 +1,6 @@
 "use client";
 
-import React, { useRef } from 'react';
+import React, { useMemo, useRef, useState } from 'react';
 import {
   XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, Legend,
   AreaChart, Area, BarChart, Bar, LineChart, Line, PieChart, Pie, Cell,
@@ -201,10 +201,56 @@ export const Dashboard: React.FC<DashboardProps> = ({ data }) => {
   } = data;
 
   const dashboardRef = useRef<HTMLDivElement>(null);
+  const [viewMode, setViewMode] = useState<'analyst' | 'exec'>('analyst');
   const deltaLabel =
     comparisonType === 'year_over_year'     ? 'YoY' :
     comparisonType === 'period_over_period' ? 'PoP' :
     comparisonType === 'manual_comparison'  ? 'vs Prior' : '';
+
+  const executiveTakeaways = useMemo(() => {
+    const parseDelta = (raw?: string) => {
+      if (!raw) return null;
+      const m = raw.match(/-?\d+(?:\.\d+)?/);
+      return m ? Math.abs(Number(m[0])) : null;
+    };
+
+    const labels: Record<string, string> = {
+      spend: 'Spend',
+      impressions: 'Impressions',
+      clicks: 'Clicks',
+      conversions: 'Conversions',
+      blendedCPA: 'Blended CPA',
+      blendedCTR: 'Blended CTR',
+    };
+
+    const entries = Object.entries(scorecardDeltas)
+      .map(([key, d]) => ({ key, delta: d, magnitude: parseDelta(d?.value) ?? -1 }))
+      .filter((d) => d.delta && d.delta.value !== 'N/A');
+
+    const best = entries
+      .filter((d) => d.delta.direction === 'positive')
+      .sort((a, b) => b.magnitude - a.magnitude)[0];
+    const risk = entries
+      .filter((d) => d.delta.direction === 'negative')
+      .sort((a, b) => b.magnitude - a.magnitude)[0];
+
+    const cpaPlatforms = [...platformSummary]
+      .filter((p) => p.conversions > 0)
+      .sort((a, b) => a.cpa - b.cpa);
+    const bestPlat = cpaPlatforms[0];
+    const worstPlat = cpaPlatforms[cpaPlatforms.length - 1];
+
+    const recommendation = bestPlat && worstPlat
+      ? `Consider shifting 10-15% budget from ${PLATFORM_DISPLAY[worstPlat.platform] || worstPlat.platform} to ${PLATFORM_DISPLAY[bestPlat.platform] || bestPlat.platform} based on CPA gap (${worstPlat.cpa.toFixed(2)} vs ${bestPlat.cpa.toFixed(2)}).`
+      : 'Insufficient platform conversion volume for a reliable reallocation recommendation.';
+
+    return {
+      best,
+      risk,
+      recommendation,
+      labels,
+    };
+  }, [scorecardDeltas, platformSummary]);
 
 
   const exportToPDF = async () => {
@@ -249,7 +295,26 @@ export const Dashboard: React.FC<DashboardProps> = ({ data }) => {
 
   return (
     <div className="animate-in fade-in slide-in-from-bottom-4 duration-700">
-      <div className="flex justify-end mb-6">
+      <div className="flex flex-col md:flex-row md:items-center justify-between mb-6 gap-3">
+        <div className="inline-flex bg-white border border-slate-200 rounded-xl p-1 shadow-sm">
+          <button
+            onClick={() => setViewMode('exec')}
+            className={`h-9 px-4 rounded-lg text-xs font-black uppercase tracking-wider transition-colors ${
+              viewMode === 'exec' ? 'bg-blue-600 text-white' : 'text-slate-500 hover:text-slate-700'
+            }`}
+          >
+            Exec View
+          </button>
+          <button
+            onClick={() => setViewMode('analyst')}
+            className={`h-9 px-4 rounded-lg text-xs font-black uppercase tracking-wider transition-colors ${
+              viewMode === 'analyst' ? 'bg-slate-900 text-white' : 'text-slate-500 hover:text-slate-700'
+            }`}
+          >
+            Analyst View
+          </button>
+        </div>
+
         <button
           onClick={exportToPDF}
           className="px-6 h-12 bg-white border border-slate-200 rounded-xl font-bold flex items-center gap-2 hover:bg-slate-50 transition-all text-slate-700 shadow-sm group"
@@ -277,6 +342,36 @@ export const Dashboard: React.FC<DashboardProps> = ({ data }) => {
             </span>
           </div>
         )}
+
+        {/* ── Executive Strip ─────────────────────────────────────────────── */}
+        <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+          <div className="bg-gradient-to-br from-emerald-50 to-teal-50 border border-emerald-100 rounded-2xl p-4">
+            <p className="text-[10px] font-black uppercase tracking-widest text-emerald-700 mb-2">Biggest Win</p>
+            {executiveTakeaways.best ? (
+              <p className="text-sm font-bold text-slate-800">
+                {executiveTakeaways.labels[executiveTakeaways.best.key] ?? executiveTakeaways.best.key}: {executiveTakeaways.best.delta.value}
+              </p>
+            ) : (
+              <p className="text-sm font-medium text-slate-500">No statistically meaningful positive shifts yet.</p>
+            )}
+          </div>
+
+          <div className="bg-gradient-to-br from-rose-50 to-red-50 border border-rose-100 rounded-2xl p-4">
+            <p className="text-[10px] font-black uppercase tracking-widest text-rose-700 mb-2">Biggest Risk</p>
+            {executiveTakeaways.risk ? (
+              <p className="text-sm font-bold text-slate-800">
+                {executiveTakeaways.labels[executiveTakeaways.risk.key] ?? executiveTakeaways.risk.key}: {executiveTakeaways.risk.delta.value}
+              </p>
+            ) : (
+              <p className="text-sm font-medium text-slate-500">No material declines detected in reliable metrics.</p>
+            )}
+          </div>
+
+          <div className="bg-gradient-to-br from-blue-50 to-indigo-50 border border-blue-100 rounded-2xl p-4">
+            <p className="text-[10px] font-black uppercase tracking-widest text-blue-700 mb-2">Reallocation Signal</p>
+            <p className="text-sm font-medium text-slate-700">{executiveTakeaways.recommendation}</p>
+          </div>
+        </div>
 
         {/* ── KPI Cards (2 rows of 4) ──────────────────────────────────────── */}
         <div className="grid grid-cols-2 sm:grid-cols-4 gap-4">
@@ -378,6 +473,7 @@ export const Dashboard: React.FC<DashboardProps> = ({ data }) => {
         </div>
 
         {/* ── Row 2: CPA over Time + Platform Efficiency Bar ──────────────── */}
+        {viewMode === 'analyst' && (
         <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
           <div className="lg:col-span-2 bg-white p-8 rounded-[2rem] border border-slate-100 shadow-sm">
             <SectionHeader icon={TrendingUp} title="CPA by Platform over Time" />
@@ -423,9 +519,12 @@ export const Dashboard: React.FC<DashboardProps> = ({ data }) => {
             )}
           </div>
         </div>
+        )}
 
         {/* ── Campaign Table ───────────────────────────────────────────────── */}
-        <CampaignTable data={campaignSummary} blendedCPA={scorecards.blendedCPA} />
+        {viewMode === 'analyst' && (
+          <CampaignTable data={campaignSummary} blendedCPA={scorecards.blendedCPA} />
+        )}
 
         {/* ── Gemini Analysis ──────────────────────────────────────────────── */}
         <div className="bg-slate-900 text-white rounded-[2rem] p-8 shadow-2xl relative overflow-hidden">

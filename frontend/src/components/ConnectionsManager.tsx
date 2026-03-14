@@ -3,6 +3,8 @@
 import React, { useState, useEffect } from 'react';
 import { Plus, RefreshCcw, CheckCircle2, Zap } from 'lucide-react';
 
+const API_BASE = process.env.NEXT_PUBLIC_API_BASE_URL ?? 'http://localhost:8000';
+
 interface Connection {
   id: number;
   platform: string;
@@ -41,7 +43,7 @@ export const ConnectionsManager: React.FC<ConnectionsManagerProps> = ({
 
   const fetchConnections = async () => {
     try {
-      const response = await fetch('http://localhost:8000/api/connections');
+      const response = await fetch(`${API_BASE}/api/connections`);
       const data = await response.json();
       setConnections(data);
     } catch (error) {
@@ -52,7 +54,7 @@ export const ConnectionsManager: React.FC<ConnectionsManagerProps> = ({
   const addMockConnection = async (platform: string) => {
     try {
       const accountName = `${platform.charAt(0).toUpperCase() + platform.slice(1)} - Main Account`;
-      const response = await fetch(`http://localhost:8000/api/connections?platform=${platform}&account_name=${encodeURIComponent(accountName)}`, {
+      const response = await fetch(`${API_BASE}/api/connections?platform=${platform}&account_name=${encodeURIComponent(accountName)}`, {
         method: 'POST'
       });
       if (response.ok) {
@@ -68,7 +70,7 @@ export const ConnectionsManager: React.FC<ConnectionsManagerProps> = ({
     setIsSyncing(true);
     setUploadStep('Connecting to API...');
     try {
-      const response = await fetch(`http://localhost:8000/api/sync/${id}`, { method: 'POST' });
+      const response = await fetch(`${API_BASE}/api/sync/${id}`, { method: 'POST' });
       const result = await response.json();
       if (result.status === 'success') {
         onSyncComplete(result);

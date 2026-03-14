@@ -47,6 +47,12 @@ PLATFORM_MAPPINGS = {
     },
 }
 
+MIN_PRIOR_SPEND = 100
+MIN_PRIOR_IMPRESSIONS = 1000
+MIN_PRIOR_CLICKS = 50
+MIN_PRIOR_CONVERSIONS = 10
+MIN_CAMPAIGN_CONVERSIONS_FOR_RANK = 5
+
 
 def _safe_divide(numerator: float, denominator: float) -> float:
     return numerator / denominator if denominator else 0.0
@@ -109,13 +115,35 @@ def _compute_deltas(current_df: pd.DataFrame, prior_df: pd.DataFrame) -> Dict:
     Compute blended + per-platform metric deltas between two DataFrames.
     Returns {"blended": {...}, "byPlatform": {platform: {...}}}.
     """
-    def _delta(curr: float, prev: float, lower_is_better: bool = False) -> Dict:
-        if prev == 0:
-            return {"value": "N/A", "direction": "neutral"}
+    def _delta(
+        curr: float,
+        prev: float,
+        lower_is_better: bool = False,
+        min_prior: float = 0.0,
+        medium_prior: float = 0.0,
+        high_prior: float = 0.0,
+        sample_size: Optional[float] = None,
+        min_sample: float = 0.0,
+    ) -> Dict:
+        baseline = sample_size if sample_size is not None else prev
+        if prev == 0 or baseline < min_prior or baseline < min_sample:
+            return {"value": "N/A", "direction": "neutral", "confidence": "low"}
+
         pct = ((curr - prev) / prev) * 100
         sign = "+" if pct >= 0 else ""
         improving = (pct <= 0) if lower_is_better else (pct >= 0)
-        return {"value": f"{sign}{pct:.1f}%", "direction": "positive" if improving else "negative"}
+
+        confidence = "low"
+        if high_prior and baseline >= high_prior:
+            confidence = "high"
+        elif medium_prior and baseline >= medium_prior:
+            confidence = "medium"
+
+        return {
+            "value": f"{sign}{pct:.1f}%",
+            "direction": "positive" if improving else "negative",
+            "confidence": confidence,
+        }
 
     def _df_deltas(c: pd.DataFrame, p: pd.DataFrame) -> Dict:
         c_spend  = float(c['spend'].sum())
@@ -131,12 +159,51 @@ def _compute_deltas(current_df: pd.DataFrame, prior_df: pd.DataFrame) -> Dict:
         c_ctr    = _safe_divide(c_clicks, c_impr) * 100
         p_ctr    = _safe_divide(p_clicks, p_impr) * 100
         return {
-            "spend":       _delta(c_spend,  p_spend),
-            "impressions": _delta(c_impr,   p_impr),
-            "clicks":      _delta(c_clicks, p_clicks),
-            "conversions": _delta(c_conv,   p_conv),
-            "blendedCPA":  _delta(c_cpa,    p_cpa,  lower_is_better=True),
-            "blendedCTR":  _delta(c_ctr,    p_ctr),
+            "spend": _delta(
+                c_spend,
+                p_spend,
+                min_prior=MIN_PRIOR_SPEND,
+                medium_prior=500,
+                high_prior=1500,
+            ),
+            "impressions": _delta(
+                c_impr,
+                p_impr,
+                min_prior=MIN_PRIOR_IMPRESSIONS,
+                medium_prior=5000,
+                high_prior=20000,
+            ),
+            "clicks": _delta(
+                c_clicks,
+                p_clicks,
+                min_prior=MIN_PRIOR_CLICKS,
+                medium_prior=250,
+                high_prior=1000,
+            ),
+            "conversions": _delta(
+                c_conv,
+                p_conv,
+                min_prior=MIN_PRIOR_CONVERSIONS,
+                medium_prior=25,
+                high_prior=75,
+            ),
+            "blendedCPA": _delta(
+                c_cpa,
+                p_cpa,
+                lower_is_better=True,
+                sample_size=p_conv,
+                min_sample=MIN_PRIOR_CONVERSIONS,
+                medium_prior=25,
+                high_prior=75,
+            ),
+            "blendedCTR": _delta(
+                c_ctr,
+                p_ctr,
+                sample_size=p_impr,
+                min_sample=MIN_PRIOR_IMPRESSIONS,
+                medium_prior=5000,
+                high_prior=20000,
+            ),
         }
 
     blended = _df_deltas(current_df, prior_df)
@@ -314,7 +381,7 @@ def aggregate_data(
     campaign_summary = camp_agg.round(2).to_dict(orient='records')
 
     # ── Top / Bottom Performers (by CPA among campaigns with conversions) ────
-    active = camp_agg[camp_agg['conversions'] > 0]
+    active = camp_agg[camp_agg['conversions'] >= MIN_CAMPAIGN_CONVERSIONS_FOR_RANK]
     top_performer: Optional[Dict] = None
     bottom_performer: Optional[Dict] = None
     if not active.empty:
