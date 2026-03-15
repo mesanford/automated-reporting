@@ -61,6 +61,26 @@ interface PlatformSummaryRow {
   ctr: number;
   conversions: number;
 }
+interface HierarchySummaryRow {
+  level: string;
+  platform: string;
+  name: string;
+  spend: number;
+  impressions: number;
+  clicks: number;
+  conversions: number;
+  cpa: number;
+  ctr: number;
+  cvr: number;
+  cpc: number;
+  roas: number;
+  spend_share: number;
+}
+interface HierarchySummary {
+  campaign: HierarchySummaryRow[];
+  adGroup: HierarchySummaryRow[];
+  adAsset: HierarchySummaryRow[];
+}
 interface ChartDataPoint {
   date: string;
   [key: string]: string | number | null;
@@ -88,6 +108,7 @@ interface DashboardProps {
     currentPeriodLabel: string;
     priorPeriodLabel: string;
     campaignSummary: CampaignSummaryRow[];
+    hierarchySummary: HierarchySummary;
     platformSummary: PlatformSummaryRow[];
     topPerformer: PerformerInfo | null;
     bottomPerformer: PerformerInfo | null;
@@ -196,12 +217,13 @@ export const Dashboard: React.FC<DashboardProps> = ({ data }) => {
     chartData, scorecards, scorecardDeltas = {},
     platformDeltas = {}, comparisonType = 'none',
     currentPeriodLabel = '', priorPeriodLabel = '',
-    campaignSummary, platformSummary = [],
+    campaignSummary, hierarchySummary = { campaign: [], adGroup: [], adAsset: [] }, platformSummary = [],
     topPerformer, bottomPerformer, geminiAnalysis,
   } = data;
 
   const dashboardRef = useRef<HTMLDivElement>(null);
   const [viewMode, setViewMode] = useState<'analyst' | 'exec'>('analyst');
+  const [hierarchyLevel, setHierarchyLevel] = useState<'campaign' | 'adGroup' | 'adAsset'>('campaign');
   const deltaLabel =
     comparisonType === 'year_over_year'     ? 'YoY' :
     comparisonType === 'period_over_period' ? 'PoP' :
@@ -292,6 +314,31 @@ export const Dashboard: React.FC<DashboardProps> = ({ data }) => {
       value: p.spend,
       fill: PLATFORM_COLORS[p.platform] || '#94a3b8',
     }));
+
+  const campaignFallbackHierarchy: HierarchySummaryRow[] = campaignSummary.map((r) => ({
+    level: 'campaign',
+    platform: r.platform,
+    name: r.campaign,
+    spend: r.spend,
+    impressions: r.impressions,
+    clicks: r.clicks,
+    conversions: r.conversions,
+    cpa: r.cpa,
+    ctr: r.ctr,
+    cvr: r.cvr,
+    cpc: r.cpc,
+    roas: 0,
+    spend_share: r.spend_share,
+  }));
+
+  const activeHierarchyRows = hierarchyLevel === 'campaign'
+    ? (hierarchySummary.campaign.length > 0 ? hierarchySummary.campaign : campaignFallbackHierarchy)
+    : (hierarchySummary[hierarchyLevel] ?? []);
+  const hierarchyByPlatform = activeHierarchyRows.reduce<Record<string, HierarchySummaryRow[]>>((acc, row) => {
+    if (!acc[row.platform]) acc[row.platform] = [];
+    acc[row.platform].push(row);
+    return acc;
+  }, {});
 
   return (
     <div className="animate-in fade-in slide-in-from-bottom-4 duration-700">
@@ -401,6 +448,76 @@ export const Dashboard: React.FC<DashboardProps> = ({ data }) => {
             </div>
           </div>
         )}
+
+        {/* ── Hierarchy Summaries ─────────────────────────────────────────── */}
+        <div>
+          <SectionHeader icon={BarChart3} title="Hierarchy Summaries by Platform" />
+          <div className="inline-flex bg-white border border-slate-200 rounded-xl p-1 shadow-sm mb-4">
+            {[
+              { key: 'campaign', label: 'Campaign' },
+              { key: 'adGroup', label: 'Ad Set / Ad Group' },
+              { key: 'adAsset', label: 'Ad / Asset' },
+            ].map((opt) => (
+              <button
+                key={opt.key}
+                onClick={() => setHierarchyLevel(opt.key as 'campaign' | 'adGroup' | 'adAsset')}
+                className={`h-8 px-3 rounded-lg text-[11px] font-black uppercase tracking-wider transition-colors ${
+                  hierarchyLevel === opt.key ? 'bg-blue-600 text-white' : 'text-slate-500 hover:text-slate-700'
+                }`}
+              >
+                {opt.label}
+              </button>
+            ))}
+          </div>
+
+          {activeHierarchyRows.length === 0 ? (
+            <div className="bg-white border border-slate-100 rounded-2xl p-5 text-sm text-slate-500">
+              No data available for this hierarchy level.
+            </div>
+          ) : (
+            <div className="space-y-4">
+              {Object.entries(hierarchyByPlatform)
+                .sort(([a], [b]) => a.localeCompare(b))
+                .map(([platform, rows]) => (
+                  <div key={platform} className="bg-white border border-slate-100 rounded-2xl p-5 shadow-sm">
+                    <div className="flex items-center justify-between mb-3">
+                      <h4 className="text-sm font-black text-slate-700">{PLATFORM_DISPLAY[platform] || platform}</h4>
+                      <span className="text-xs font-bold text-slate-400 uppercase tracking-wider">{rows.length} items</span>
+                    </div>
+                    <div className="overflow-x-auto">
+                      <table className="w-full text-left text-xs">
+                        <thead>
+                          <tr className="text-slate-400 uppercase tracking-wider">
+                            <th className="pb-2 pr-3">Name</th>
+                            <th className="pb-2 pr-3 text-right">Spend</th>
+                            <th className="pb-2 pr-3 text-right">Conv.</th>
+                            <th className="pb-2 pr-3 text-right">CPA</th>
+                            <th className="pb-2 pr-3 text-right">CTR</th>
+                            <th className="pb-2 text-right">% Spend</th>
+                          </tr>
+                        </thead>
+                        <tbody>
+                          {[...rows]
+                            .sort((a, b) => b.spend - a.spend)
+                            .slice(0, 12)
+                            .map((r, idx) => (
+                              <tr key={`${platform}-${idx}`} className="border-t border-slate-50">
+                                <td className="py-2 pr-3 font-medium text-slate-700">{r.name || 'Unnamed'}</td>
+                                <td className="py-2 pr-3 text-right tabular-nums">${r.spend.toLocaleString(undefined, { maximumFractionDigits: 2 })}</td>
+                                <td className="py-2 pr-3 text-right tabular-nums">{r.conversions.toLocaleString()}</td>
+                                <td className="py-2 pr-3 text-right tabular-nums">${r.cpa.toLocaleString(undefined, { maximumFractionDigits: 2 })}</td>
+                                <td className="py-2 pr-3 text-right tabular-nums">{r.ctr.toLocaleString(undefined, { maximumFractionDigits: 2 })}%</td>
+                                <td className="py-2 text-right tabular-nums">{r.spend_share.toLocaleString(undefined, { maximumFractionDigits: 2 })}%</td>
+                              </tr>
+                            ))}
+                        </tbody>
+                      </table>
+                    </div>
+                  </div>
+                ))}
+            </div>
+          )}
+        </div>
 
         {/* ── Top / Bottom Performers ──────────────────────────────────────── */}
         {(topPerformer || bottomPerformer) && (

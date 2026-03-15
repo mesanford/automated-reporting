@@ -65,6 +65,55 @@ interface PlatformSummaryRow {
   conversions: number;
 }
 
+interface HierarchySummaryRow {
+  level: string;
+  platform: string;
+  name: string;
+  spend: number;
+  impressions: number;
+  clicks: number;
+  conversions: number;
+  cpa: number;
+  ctr: number;
+  cvr: number;
+  cpc: number;
+  roas: number;
+  spend_share: number;
+}
+
+interface HierarchySummary {
+  campaign: HierarchySummaryRow[];
+  adGroup: HierarchySummaryRow[];
+  adAsset: HierarchySummaryRow[];
+}
+
+const normalizeHierarchySummary = (
+  source: HierarchySummary | undefined,
+  campaignRows: CampaignSummaryRow[],
+): HierarchySummary => {
+  const campaignFallback: HierarchySummaryRow[] = campaignRows.map((r) => ({
+    level: 'campaign',
+    platform: r.platform,
+    name: r.campaign,
+    spend: r.spend,
+    impressions: r.impressions,
+    clicks: r.clicks,
+    conversions: r.conversions,
+    cpa: r.cpa,
+    ctr: r.ctr,
+    cvr: r.cvr,
+    cpc: r.cpc,
+    roas: 0,
+    spend_share: r.spend_share,
+  }));
+
+  return {
+    campaign: source?.campaign?.length ? source.campaign : campaignFallback,
+    adGroup: source?.adGroup ?? [],
+    adAsset: source?.adAsset ?? [],
+  };
+};
+
 interface PerformerInfo {
   campaign: string;
   platform: string;
@@ -74,6 +123,7 @@ interface PerformerInfo {
 }
 
 interface DashboardData {
+  id?: number;
   chartData: ChartDataPoint[];
   scorecards: Scorecards;
   scorecardDeltas: Record<string, DeltaValue>;
@@ -82,6 +132,7 @@ interface DashboardData {
   currentPeriodLabel: string;
   priorPeriodLabel: string;
   campaignSummary: CampaignSummaryRow[];
+  hierarchySummary: HierarchySummary;
   platformSummary: PlatformSummaryRow[];
   topPerformer: PerformerInfo | null;
   bottomPerformer: PerformerInfo | null;
@@ -99,6 +150,7 @@ interface ApiHistoryReport {
   current_period_label?: string;
   prior_period_label?: string;
   campaign_summary: CampaignSummaryRow[];
+  hierarchy_summary?: HierarchySummary;
   platform_summary?: PlatformSummaryRow[];
   top_performer?: PerformerInfo | null;
   bottom_performer?: PerformerInfo | null;
@@ -147,7 +199,10 @@ export default function Home() {
       
       if (result.status === 'success') {
         setUploadStep('Complete!');
-        setReportData(result);
+        setReportData({
+          ...result,
+          hierarchySummary: normalizeHierarchySummary(result.hierarchySummary, result.campaignSummary ?? []),
+        });
         fetchHistory(); // Refresh history
       } else {
         alert(result.message || 'Upload failed');
@@ -162,16 +217,22 @@ export default function Home() {
   };
 
   const onSyncComplete = (result: unknown) => {
-    setReportData(result as DashboardData);
+    const next = result as DashboardData;
+    setReportData({
+      ...next,
+      hierarchySummary: normalizeHierarchySummary(next.hierarchySummary, next.campaignSummary ?? []),
+    });
     fetchHistory();
   };
 
   const selectReport = (report: ApiHistoryReport) => {
     setReportData({
+      id:              report.id,
       chartData:       report.chart_data,
       scorecards:      report.scorecards,
       scorecardDeltas: report.scorecard_deltas  ?? {},
       campaignSummary: report.campaign_summary,
+      hierarchySummary: normalizeHierarchySummary(report.hierarchy_summary, report.campaign_summary),
       platformSummary: report.platform_summary  ?? [],
       topPerformer:    report.top_performer     ?? null,
       bottomPerformer: report.bottom_performer  ?? null,
@@ -215,6 +276,33 @@ export default function Home() {
       alert('Report summary link copied to clipboard.');
     } catch {
       alert('Unable to share automatically. Please copy the page URL manually.');
+    }
+  };
+
+  const handleDownloadFullReport = async () => {
+    if (!reportData?.id) {
+      alert('This report is missing an ID and cannot be downloaded yet.');
+      return;
+    }
+
+    try {
+      const response = await fetch(`${API_BASE}/api/reports/${reportData.id}/markdown`);
+      if (!response.ok) {
+        throw new Error('Download failed');
+      }
+
+      const blob = await response.blob();
+      const url = window.URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = `antigravity-report-${reportData.id}.md`;
+      document.body.appendChild(a);
+      a.click();
+      a.remove();
+      window.URL.revokeObjectURL(url);
+    } catch (error) {
+      console.error('Error downloading markdown report:', error);
+      alert('Could not download report markdown.');
     }
   };
 
@@ -376,6 +464,12 @@ export default function Home() {
                   </div>
                   
                   <div className="flex items-center gap-3">
+                    <button
+                      onClick={handleDownloadFullReport}
+                      className="px-6 h-12 bg-white border border-slate-200 text-slate-700 rounded-xl font-bold flex items-center gap-2 hover:bg-slate-50 shadow-sm transition-all"
+                    >
+                      Download Full Report (.md)
+                    </button>
                     <button
                       onClick={handleShareReport}
                       className="px-6 h-12 bg-blue-600 text-white rounded-xl font-bold flex items-center gap-2 hover:bg-blue-700 shadow-lg shadow-blue-200 transition-all"

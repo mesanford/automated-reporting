@@ -45,6 +45,7 @@ def ensure_sqlite_schema_compat(engine: Engine) -> None:
         "current_period_label": "VARCHAR",
         "prior_period_label": "VARCHAR",
         "platform_summary": "JSON",
+        "hierarchy_summary": "JSON",
         "top_performer": "JSON",
         "bottom_performer": "JSON",
     }

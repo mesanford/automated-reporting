@@ -15,6 +15,8 @@ def get_mock_data(platform: str):
     }
     
     campaigns = platforms.get(platform, ['Generic Campaign A', 'Generic Campaign B'])
+    ad_groups = ["Prospecting", "Retargeting", "Brand"]
+    ad_assets = ["Video A", "Video B", "Image C", "Carousel D"]
     
     for campaign in campaigns:
         for i in range(14):  # 14 days of data
@@ -24,11 +26,15 @@ def get_mock_data(platform: str):
             clicks = int(impressions * random.uniform(0.01, 0.05))
             conversions = int(clicks * random.uniform(0.02, 0.1))
             revenue = conversions * random.uniform(20, 120)
+            ad_group = random.choice(ad_groups)
+            ad_asset = random.choice(ad_assets)
             
             data.append({
                 'date': date,
                 'platform': platform,
                 'campaign': campaign,
+                'ad_group': ad_group,
+                'ad_asset': ad_asset,
                 'spend': round(spend, 2),
                 'impressions': impressions,
                 'clicks': clicks,

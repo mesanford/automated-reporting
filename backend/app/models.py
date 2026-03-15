@@ -16,6 +16,7 @@ class Report(Base):
     current_period_label = Column(String)
     prior_period_label = Column(String)
     campaign_summary = Column(JSON)
+    hierarchy_summary = Column(JSON)
     platform_summary = Column(JSON)
     top_performer = Column(JSON)
     bottom_performer = Column(JSON)

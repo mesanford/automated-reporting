@@ -3,7 +3,7 @@ import io
 from typing import List, Dict, Optional, Tuple
 
 UNIVERSAL_COLUMNS = [
-    'date', 'platform', 'campaign', 'spend', 'impressions', 'clicks', 'conversions', 'revenue'
+    'date', 'platform', 'campaign', 'ad_group', 'ad_asset', 'spend', 'impressions', 'clicks', 'conversions', 'revenue'
 ]
 
 # Platform-specific column mappings to the Universal Schema.
@@ -47,6 +47,29 @@ PLATFORM_MAPPINGS = {
     },
 }
 
+HIERARCHY_ALIASES = {
+    'google': {
+        'ad_group': ['Ad group', 'Ad Group', 'Ad group name', 'Asset group', 'Asset Group'],
+        'ad_asset': ['Ad', 'Ad name', 'Asset', 'Asset name', 'Asset group'],
+    },
+    'meta': {
+        'ad_group': ['Ad Set Name', 'Ad set name', 'Ad Set'],
+        'ad_asset': ['Ad Name', 'Ad name', 'Creative Name'],
+    },
+    'linkedin': {
+        'ad_group': ['Campaign Group Name', 'Campaign Group', 'Ad Set Name'],
+        'ad_asset': ['Creative Name', 'Ad Name', 'Ad'],
+    },
+    'tiktok': {
+        'ad_group': ['Ad Group Name', 'Ad Group', 'Ad group name'],
+        'ad_asset': ['Ad Name', 'Ad name', 'Asset Name'],
+    },
+    'microsoft': {
+        'ad_group': ['Ad group', 'Ad Group', 'Asset group'],
+        'ad_asset': ['Ad', 'Ad name', 'Asset'],
+    },
+}
+
 MIN_PRIOR_SPEND = 100
 MIN_PRIOR_IMPRESSIONS = 1000
 MIN_PRIOR_CLICKS = 50
@@ -56,6 +79,13 @@ MIN_CAMPAIGN_CONVERSIONS_FOR_RANK = 5
 
 def _safe_divide(numerator: float, denominator: float) -> float:
     return numerator / denominator if denominator else 0.0
+
+
+def _first_existing_column(df: pd.DataFrame, candidates: List[str]) -> Optional[str]:
+    for col in candidates:
+        if col in df.columns:
+            return col
+    return None
 
 
 def detect_platform(df: pd.DataFrame) -> str:
@@ -78,14 +108,26 @@ def process_csv(file_content: bytes, filename: str) -> pd.DataFrame:
     df = df.rename(columns=mapping)
     df['platform'] = platform
 
+    hierarchy = HIERARCHY_ALIASES.get(platform, {})
+    ad_group_source = _first_existing_column(df, hierarchy.get('ad_group', []))
+    ad_asset_source = _first_existing_column(df, hierarchy.get('ad_asset', []))
+
+    if ad_group_source:
+        df['ad_group'] = df[ad_group_source]
+    if ad_asset_source:
+        df['ad_asset'] = df[ad_asset_source]
+
     for col in UNIVERSAL_COLUMNS:
         if col not in df.columns:
-            df[col] = 0
+            df[col] = '' if col in ('campaign', 'ad_group', 'ad_asset', 'date', 'platform') else 0
 
     df['date'] = pd.to_datetime(df['date']).dt.strftime('%Y-%m-%d')
 
     for col in ['spend', 'impressions', 'clicks', 'conversions', 'revenue']:
         df[col] = pd.to_numeric(df[col], errors='coerce').fillna(0)
+
+    for col in ['campaign', 'ad_group', 'ad_asset']:
+        df[col] = df[col].fillna('').astype(str).str.strip()
 
     return df[UNIVERSAL_COLUMNS]
 
@@ -249,6 +291,33 @@ def _auto_split_periods(df: pd.DataFrame) -> Tuple[pd.DataFrame, pd.DataFrame, s
     return current_df, prior_df, "period_over_period", _period_label(current_df), _period_label(prior_df)
 
 
+def _build_hierarchy_summary(
+    df: pd.DataFrame,
+    level_col: str,
+    level_key: str,
+    total_spend: float,
+) -> List[Dict]:
+    if level_col not in df.columns:
+        return []
+
+    level_df = df[df[level_col].astype(str).str.strip() != ''].copy()
+    if level_df.empty:
+        return []
+
+    agg = level_df.groupby(['platform', level_col]).agg(
+        spend=('spend', 'sum'),
+        impressions=('impressions', 'sum'),
+        clicks=('clicks', 'sum'),
+        conversions=('conversions', 'sum'),
+        revenue=('revenue', 'sum'),
+    ).reset_index()
+    agg = _compute_derived_metrics(agg)
+    agg['spend_share'] = agg['spend'].apply(lambda x: round(_safe_divide(x, total_spend) * 100, 2))
+    agg = agg.rename(columns={level_col: 'name'})
+    agg['level'] = level_key
+    return agg.round(2).to_dict(orient='records')
+
+
 def aggregate_data(
     dataframes: List[pd.DataFrame],
     comparison_dataframes: Optional[List[pd.DataFrame]] = None,
@@ -267,6 +336,7 @@ def aggregate_data(
             "currentPeriodLabel": "N/A",
             "priorPeriodLabel": "N/A",
             "campaignSummary": [],
+            "hierarchySummary": {"campaign": [], "adGroup": [], "adAsset": []},
             "platformSummary": [],
             "topPerformer": None,
             "bottomPerformer": None,
@@ -380,6 +450,12 @@ def aggregate_data(
     )
     campaign_summary = camp_agg.round(2).to_dict(orient='records')
 
+    hierarchy_summary = {
+        "campaign": _build_hierarchy_summary(combined_df, 'campaign', 'campaign', total_spend),
+        "adGroup": _build_hierarchy_summary(combined_df, 'ad_group', 'adGroup', total_spend),
+        "adAsset": _build_hierarchy_summary(combined_df, 'ad_asset', 'adAsset', total_spend),
+    }
+
     # ── Top / Bottom Performers (by CPA among campaigns with conversions) ────
     active = camp_agg[camp_agg['conversions'] >= MIN_CAMPAIGN_CONVERSIONS_FOR_RANK]
     top_performer: Optional[Dict] = None
@@ -420,6 +496,11 @@ def aggregate_data(
         "top_campaign":       top_performer,
         "worst_campaign":     bottom_performer,
         "campaign_count":     len(campaign_summary),
+        "hierarchy_counts": {
+            "campaign": len(hierarchy_summary["campaign"]),
+            "ad_group": len(hierarchy_summary["adGroup"]),
+            "ad_asset": len(hierarchy_summary["adAsset"]),
+        },
     }
 
     return {
@@ -431,6 +512,7 @@ def aggregate_data(
         "currentPeriodLabel": current_label,
         "priorPeriodLabel":   prior_label,
         "campaignSummary":    campaign_summary,
+        "hierarchySummary":   hierarchy_summary,
         "platformSummary":    platform_summary,
         "topPerformer":       top_performer,
         "bottomPerformer":    bottom_performer,
