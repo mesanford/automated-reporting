@@ -11,6 +11,28 @@ import {
 
 const API_BASE = process.env.NEXT_PUBLIC_API_BASE_URL ?? 'http://localhost:8000';
 
+const parseApiResponse = async (response: Response) => {
+  let payload: unknown = null;
+  try {
+    payload = await response.json();
+  } catch {
+    payload = null;
+  }
+
+  if (!response.ok) {
+    const message =
+      typeof payload === 'object' &&
+      payload !== null &&
+      'message' in payload &&
+      typeof (payload as { message?: unknown }).message === 'string'
+        ? ((payload as { message: string }).message)
+        : `Request failed (${response.status})`;
+    throw new Error(message);
+  }
+
+  return payload;
+};
+
 type DeltaDirection = 'positive' | 'negative' | 'neutral';
 
 interface DeltaValue {
@@ -23,6 +45,8 @@ interface PlatformDeltaValue {
   conversions?: DeltaValue;
   cpa?: DeltaValue;
   ctr?: DeltaValue;
+  blendedCPA?: DeltaValue;
+  blendedCTR?: DeltaValue;
 }
 
 interface Scorecards {
@@ -172,8 +196,8 @@ export default function Home() {
   const fetchHistory = async () => {
     try {
       const response = await fetch(`${API_BASE}/api/reports`);
-      const data = await response.json();
-      setHistory(data);
+      const data = await parseApiResponse(response);
+      setHistory(Array.isArray(data) ? (data as ApiHistoryReport[]) : []);
     } catch (error) {
       console.error('Error fetching history:', error);
     }
@@ -195,7 +219,12 @@ export default function Home() {
       });
 
       setUploadStep('Gemini analysis...');
-      const result = await response.json();
+      const result = await parseApiResponse(response) as {
+        status?: string;
+        message?: string;
+        hierarchySummary?: HierarchySummary;
+        campaignSummary?: CampaignSummaryRow[];
+      } & DashboardData;
       
       if (result.status === 'success') {
         setUploadStep('Complete!');
@@ -256,12 +285,12 @@ export default function Home() {
       `Blended CPA: $${reportData.scorecards.blendedCPA.toLocaleString()}`,
     ].join(' | ');
 
-    const text = `Antigravity Performance Snapshot\n${summary}`;
+    const text = `Performance Snapshot\n${summary}`;
 
     if (navigator.share) {
       try {
         await navigator.share({
-          title: 'Antigravity Performance Snapshot',
+          title: 'Performance Snapshot',
           text,
           url: window.location.href,
         });
@@ -288,7 +317,7 @@ export default function Home() {
     try {
       const response = await fetch(`${API_BASE}/api/reports/${reportData.id}/markdown`);
       if (!response.ok) {
-        throw new Error('Download failed');
+        throw new Error(`Download failed (${response.status})`);
       }
 
       const blob = await response.blob();
@@ -307,16 +336,16 @@ export default function Home() {
   };
 
   return (
-    <main className="min-h-screen bg-[#fcfcfd] text-slate-900 selection:bg-blue-100 selection:text-blue-900 flex flex-col">
+    <main className="min-h-screen flex flex-col selection:bg-blue-100 selection:text-blue-900" style={{backgroundColor: 'var(--background)', color: 'var(--foreground)'}}>
       {/* Premium Header */}
-      <nav className="border-b border-slate-100 bg-white/80 backdrop-blur-md sticky top-0 z-50">
+      <nav className="border-b border-slate-100 bg-background/80 backdrop-blur-md sticky top-0 z-50">
         <div className="max-w-7xl mx-auto px-6 h-20 flex items-center justify-between">
           <div className="flex items-center gap-3">
             <div className="w-10 h-10 bg-gradient-to-br from-blue-600 to-indigo-700 rounded-xl flex items-center justify-center shadow-lg shadow-blue-200 cursor-pointer" onClick={reset}>
               <Zap className="text-white w-6 h-6 fill-white" />
             </div>
             <h1 className="text-2xl font-black tracking-tight text-slate-900">
-              ANTIGRAVITY<span className="text-blue-600">.</span>
+              MM Sanford Internal Reporting<span className="text-blue-600">.</span>
             </h1>
           </div>
           
@@ -340,7 +369,7 @@ export default function Home() {
       <div className="flex-1 flex relative overflow-hidden">
         {/* History Sidebar */}
         <aside className={`
-          absolute lg:relative z-40 h-[calc(100vh-80px)] w-80 bg-white border-r border-slate-100 transition-all duration-500 ease-in-out
+          absolute lg:relative z-40 h-[calc(100vh-80px)] w-80 bg-background border-r border-slate-100 transition-all duration-500 ease-in-out
           ${showHistory ? 'translate-x-0 opacity-100' : '-translate-x-full lg:-ml-80 opacity-0'}
         `}>
           <div className="p-6 h-full flex flex-col">
@@ -405,14 +434,14 @@ export default function Home() {
                   <div className="flex items-center justify-center gap-4 mt-8">
                     <button 
                       onClick={() => setActiveTab('upload')}
-                      className={`h-12 px-8 rounded-2xl font-bold flex items-center gap-2 transition-all ${activeTab === 'upload' ? 'bg-white shadow-xl shadow-blue-100 text-blue-600' : 'text-slate-400 hover:text-slate-600'}`}
+                      className={`h-12 px-8 rounded-2xl font-bold flex items-center gap-2 transition-all ${activeTab === 'upload' ? 'bg-background shadow-xl shadow-blue-100 text-blue-600' : 'text-slate-400 hover:text-slate-600'}`}
                     >
                       <Layers size={18} />
                       File Upload
                     </button>
                     <button 
                       onClick={() => setActiveTab('accounts')}
-                      className={`h-12 px-8 rounded-2xl font-bold flex items-center gap-2 transition-all ${activeTab === 'accounts' ? 'bg-white shadow-xl shadow-blue-100 text-blue-600' : 'text-slate-400 hover:text-slate-600'}`}
+                      className={`h-12 px-8 rounded-2xl font-bold flex items-center gap-2 transition-all ${activeTab === 'accounts' ? 'bg-background shadow-xl shadow-blue-100 text-blue-600' : 'text-slate-400 hover:text-slate-600'}`}
                     >
                       <Globe size={18} />
                       Connected Accounts
@@ -466,7 +495,7 @@ export default function Home() {
                   <div className="flex items-center gap-3">
                     <button
                       onClick={handleDownloadFullReport}
-                      className="px-6 h-12 bg-white border border-slate-200 text-slate-700 rounded-xl font-bold flex items-center gap-2 hover:bg-slate-50 shadow-sm transition-all"
+                      className="px-6 h-12 bg-background border border-slate-200 text-foreground rounded-xl font-bold flex items-center gap-2 hover:opacity-90 shadow-sm transition-all"
                     >
                       Download Full Report (.md)
                     </button>

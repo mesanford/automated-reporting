@@ -28,6 +28,7 @@ antigravity.db
 .env
 .env.*
 !.env.example
+backend/.local_encryption_key
 
 # OS/editor
 .DS_Store

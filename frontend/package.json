@@ -2,10 +2,14 @@
   "name": "frontend",
   "version": "0.1.0",
   "private": true,
+  "engines": {
+    "node": ">=20.9.0 <26",
+    "npm": ">=10 <12"
+  },
   "scripts": {
-    "dev": "next dev",
-    "build": "next build",
-    "start": "next start",
+    "dev": "node scripts/check-node-version.mjs && next dev --webpack",
+    "build": "node scripts/check-node-version.mjs && next build",
+    "start": "node scripts/check-node-version.mjs && next start",
     "lint": "eslint"
   },
   "dependencies": {

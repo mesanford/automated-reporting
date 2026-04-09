@@ -1,10 +1,24 @@
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
+from sqlalchemy import inspect as sqlalchemy_inspect
 from app.api import endpoints, oauth
 from app.database import engine, ensure_sqlite_schema_compat
 from app import models
 
-models.Base.metadata.create_all(bind=engine)
+
+def _initialize_database() -> None:
+    inspector = sqlalchemy_inspect(engine)
+    existing_tables = set(inspector.get_table_names())
+    missing_tables = [
+        table for table in models.Base.metadata.sorted_tables
+        if table.name not in existing_tables
+    ]
+
+    if missing_tables:
+        models.Base.metadata.create_all(bind=engine, tables=missing_tables)
+
+
+_initialize_database()
 ensure_sqlite_schema_compat(engine)
 
 app = FastAPI(title="Antigravity API")

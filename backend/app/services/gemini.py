@@ -1,14 +1,14 @@
-import google.generativeai as genai
 import os
 import json
+from importlib import import_module
 from typing import Dict, Any
 from dotenv import load_dotenv
 
 load_dotenv()
 
 api_key = os.getenv("GOOGLE_API_KEY")
-if api_key:
-    genai.configure(api_key=api_key)
+_genai = None
+_genai_load_error = None
 
 SYSTEM_PERSONA = """You are a senior performance marketing analyst with 10+ years of experience 
 managing multi-million dollar cross-channel ad budgets. You write concise, data-first reports 
@@ -16,9 +16,32 @@ for marketing directors and CMOs. Rules: always cite specific dollar amounts and
 directly from the data provided; never fabricate benchmarks; be direct and avoid hedging 
 language; every recommendation must reference at least one specific metric from the data."""
 
+
+def _get_genai_client():
+    global _genai, _genai_load_error
+
+    if _genai is not None:
+        return _genai
+    if _genai_load_error is not None:
+        raise RuntimeError(_genai_load_error)
+
+    try:
+        module = import_module("google.generativeai")
+        module.configure(api_key=api_key)
+        _genai = module
+        return _genai
+    except Exception as exc:
+        _genai_load_error = f"Failed to load google.generativeai: {exc}"
+        raise RuntimeError(_genai_load_error) from exc
+
 def generate_analysis(gemini_input: Dict[str, Any]) -> str:
     if not api_key:
         return "Gemini API key not configured. Please set GOOGLE_API_KEY in your .env file."
+
+    try:
+        genai = _get_genai_client()
+    except RuntimeError as exc:
+        return str(exc)
 
     model = genai.GenerativeModel('gemini-2.5-pro')
 

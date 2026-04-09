@@ -349,8 +349,11 @@ def aggregate_data(
             combined_df[col] = 0
 
     # ── Period Comparison setup ───────────────────────────────────────────────
-    if comparison_dataframes:
-        comparison_combined = pd.concat(comparison_dataframes, ignore_index=True).fillna(0)
+    if comparison_dataframes is not None:
+        if comparison_dataframes:
+            comparison_combined = pd.concat(comparison_dataframes, ignore_index=True).fillna(0)
+        else:
+            comparison_combined = pd.DataFrame(columns=combined_df.columns)
         for col in UNIVERSAL_COLUMNS:
             if col not in comparison_combined.columns:
                 comparison_combined[col] = 0

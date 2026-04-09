@@ -50,6 +50,14 @@ def ensure_sqlite_schema_compat(engine: Engine) -> None:
         "bottom_performer": "JSON",
     }
 
+    connections_column_ddl = {
+        "available_accounts": "JSON",
+        "selected_account_ids": "JSON",
+        "last_sync_at": "TIMESTAMP",
+        "last_sync_status": "VARCHAR",
+        "last_sync_job_id": "INTEGER",
+    }
+
     with engine.begin() as conn:
         table_exists = conn.exec_driver_sql(
             "SELECT name FROM sqlite_master WHERE type='table' AND name='reports'"
@@ -64,3 +72,17 @@ def ensure_sqlite_schema_compat(engine: Engine) -> None:
         for col, ddl in reports_column_ddl.items():
             if col not in existing_columns:
                 conn.exec_driver_sql(f"ALTER TABLE reports ADD COLUMN {col} {ddl}")
+
+        connections_exists = conn.exec_driver_sql(
+            "SELECT name FROM sqlite_master WHERE type='table' AND name='connections'"
+        ).first()
+        if not connections_exists:
+            return
+
+        connection_columns = {
+            row[1] for row in conn.exec_driver_sql("PRAGMA table_info(connections)").fetchall()
+        }
+
+        for col, ddl in connections_column_ddl.items():
+            if col not in connection_columns:
+                conn.exec_driver_sql(f"ALTER TABLE connections ADD COLUMN {col} {ddl}")

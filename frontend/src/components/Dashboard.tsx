@@ -37,7 +37,14 @@ const ChartTooltipStyle = {
 
 // ── Types ──────────────────────────────────────────────────────────────────────
 interface Delta { value: string; direction: 'positive' | 'negative' | 'neutral'; }
-interface PlatformDelta { spend?: Delta; conversions?: Delta; cpa?: Delta; ctr?: Delta; }
+interface PlatformDelta {
+  spend?: Delta;
+  conversions?: Delta;
+  cpa?: Delta;
+  ctr?: Delta;
+  blendedCPA?: Delta;
+  blendedCTR?: Delta;
+}
 interface PerformerInfo {
   campaign: string; platform: string; cpa: number; spend: number; conversions: number;
 }
@@ -129,7 +136,7 @@ const DeltaBadge = ({ delta, label }: { delta?: Delta; label?: string }) => {
 };
 
 const KpiCard = ({ title, value, icon: Icon, prefix = "", suffix = "", delta, deltaLabel }: KpiCardProps) => (
-  <div className="bg-white p-5 rounded-3xl border border-slate-100 shadow-sm hover:shadow-md transition-shadow">
+  <div className="bg-background p-5 rounded-3xl border border-slate-100 shadow-sm hover:shadow-md transition-shadow">
     <div className="flex items-start justify-between mb-3">
       <div className="p-2.5 bg-blue-50 rounded-2xl text-blue-600"><Icon size={20} /></div>
       <DeltaBadge delta={delta} label={deltaLabel} />
@@ -151,7 +158,7 @@ const SectionHeader = ({ icon: Icon, title }: { icon: React.ComponentType<{ size
 const PerformerCard = ({ performer, type }: { performer: PerformerInfo; type: 'top' | 'bottom' }) => {
   const isTop = type === 'top';
   return (
-    <div className={`bg-white p-6 rounded-[2rem] border shadow-sm ${isTop ? 'border-emerald-100' : 'border-red-100'}`}>
+    <div className={`bg-background p-6 rounded-[2rem] border shadow-sm ${isTop ? 'border-emerald-100' : 'border-red-100'}`}>
       <div className="flex items-center gap-3 mb-4">
         <div className={`p-2 rounded-xl ${isTop ? 'bg-emerald-50' : 'bg-red-50'}`}>
           {isTop ? <Award size={18} className="text-emerald-600" /> : <AlertTriangle size={18} className="text-red-500" />}
@@ -189,7 +196,7 @@ const PerformerCard = ({ performer, type }: { performer: PerformerInfo; type: 't
 const PlatformCard = ({ plat, deltas, deltaLabel }: { plat: PlatformSummaryRow; deltas: PlatformDelta; deltaLabel: string }) => {
   const color = PLATFORM_COLORS[plat.platform] || '#94a3b8';
   return (
-    <div className="bg-white p-6 rounded-[2rem] border border-slate-100 shadow-sm">
+    <div className="bg-background p-6 rounded-[2rem] border border-slate-100 shadow-sm">
       <div className="flex items-center gap-2 mb-4">
         <div className="w-3 h-3 rounded-full flex-shrink-0" style={{ backgroundColor: color }} />
         <h4 className="text-sm font-black text-slate-700">{PLATFORM_DISPLAY[plat.platform] || plat.platform}</h4>
@@ -197,8 +204,8 @@ const PlatformCard = ({ plat, deltas, deltaLabel }: { plat: PlatformSummaryRow; 
       <div className="grid grid-cols-2 gap-3">
         {[
           { label: 'Spend', value: `$${(plat.spend ?? 0).toLocaleString(undefined, { maximumFractionDigits: 0 })}`, delta: deltas.spend },
-          { label: 'CPA',   value: `$${(plat.cpa ?? 0).toFixed(2)}`,                                               delta: deltas.cpa },
-          { label: 'CTR',   value: `${(plat.ctr ?? 0).toFixed(2)}%`,                                               delta: deltas.ctr },
+          { label: 'CPA',   value: `$${(plat.cpa ?? 0).toFixed(2)}`,                                               delta: deltas.cpa ?? deltas.blendedCPA },
+          { label: 'CTR',   value: `${(plat.ctr ?? 0).toFixed(2)}%`,                                               delta: deltas.ctr ?? deltas.blendedCTR },
           { label: 'Conv.', value: String(plat.conversions ?? 0),                                                   delta: deltas.conversions },
         ].map(({ label, value, delta }) => (
           <div key={label} className="bg-slate-50 rounded-xl p-3">
@@ -227,7 +234,7 @@ export const Dashboard: React.FC<DashboardProps> = ({ data }) => {
   const deltaLabel =
     comparisonType === 'year_over_year'     ? 'YoY' :
     comparisonType === 'period_over_period' ? 'PoP' :
-    comparisonType === 'manual_comparison'  ? 'vs Prior' : '';
+    comparisonType === 'manual_comparison'  ? 'PoP' : '';
 
   const executiveTakeaways = useMemo(() => {
     const parseDelta = (raw?: string) => {
@@ -262,9 +269,21 @@ export const Dashboard: React.FC<DashboardProps> = ({ data }) => {
     const bestPlat = cpaPlatforms[0];
     const worstPlat = cpaPlatforms[cpaPlatforms.length - 1];
 
-    const recommendation = bestPlat && worstPlat
+    const hasDistinctPlatforms =
+      !!bestPlat &&
+      !!worstPlat &&
+      bestPlat.platform !== worstPlat.platform;
+
+    const cpaGapPct =
+      hasDistinctPlatforms && bestPlat.cpa > 0
+        ? (worstPlat.cpa - bestPlat.cpa) / bestPlat.cpa
+        : 0;
+
+    const hasMeaningfulGap = cpaGapPct >= 0.08;
+
+    const recommendation = hasDistinctPlatforms && hasMeaningfulGap
       ? `Consider shifting 10-15% budget from ${PLATFORM_DISPLAY[worstPlat.platform] || worstPlat.platform} to ${PLATFORM_DISPLAY[bestPlat.platform] || bestPlat.platform} based on CPA gap (${worstPlat.cpa.toFixed(2)} vs ${bestPlat.cpa.toFixed(2)}).`
-      : 'Insufficient platform conversion volume for a reliable reallocation recommendation.';
+      : 'No clear cross-platform reallocation signal this period.';
 
     return {
       best,
@@ -278,19 +297,95 @@ export const Dashboard: React.FC<DashboardProps> = ({ data }) => {
   const exportToPDF = async () => {
     if (!dashboardRef.current) return;
     const dashboard = dashboardRef.current;
+    let wrapper: HTMLDivElement | null = null;
     try {
-      const canvas = await html2canvas(dashboard, {
-        scale: 2, useCORS: true, logging: false,
+      // Render an offscreen clone so viewport scroll/positioning cannot clip the export.
+      wrapper = document.createElement('div');
+      wrapper.style.position = 'fixed';
+      wrapper.style.left = '-100000px';
+      wrapper.style.top = '0';
+      wrapper.style.width = `${dashboard.scrollWidth}px`;
+      wrapper.style.background = '#fcfcfd';
+      wrapper.style.padding = '0';
+      wrapper.style.margin = '0';
+
+      const clone = dashboard.cloneNode(true) as HTMLElement;
+      clone.style.width = `${dashboard.scrollWidth}px`;
+      clone.style.maxWidth = 'none';
+      clone.style.transform = 'none';
+      wrapper.appendChild(clone);
+      document.body.appendChild(wrapper);
+
+      const canvas = await html2canvas(clone, {
+        scale: 2,
+        useCORS: true,
+        logging: false,
+        foreignObjectRendering: true,
         backgroundColor: '#fcfcfd',
-        windowWidth: dashboard.scrollWidth,
-        windowHeight: dashboard.scrollHeight,
+        width: clone.scrollWidth,
+        height: clone.scrollHeight,
+        windowWidth: clone.scrollWidth,
+        windowHeight: clone.scrollHeight,
+        scrollX: 0,
+        scrollY: 0,
       });
-      const imgData = canvas.toDataURL('image/png');
-      const pdf = new jsPDF({ orientation: 'landscape', unit: 'px', format: [canvas.width, canvas.height] });
-      pdf.addImage(imgData, 'PNG', 0, 0, canvas.width, canvas.height);
+
+      const pdf = new jsPDF({ orientation: 'landscape', unit: 'pt', format: 'a4' });
+      const pageWidth = pdf.internal.pageSize.getWidth();
+      const pageHeight = pdf.internal.pageSize.getHeight();
+
+      const renderedWidth = canvas.width;
+      const renderedHeight = canvas.height;
+      const targetWidth = pageWidth;
+      const fullHeightPt = (renderedHeight / renderedWidth) * targetWidth;
+
+      if (fullHeightPt <= pageHeight) {
+        const imgData = canvas.toDataURL('image/png');
+        pdf.addImage(imgData, 'PNG', 0, 0, targetWidth, fullHeightPt);
+      } else {
+        const pageHeightPx = Math.floor((pageHeight / targetWidth) * renderedWidth);
+        let offsetY = 0;
+        let pageIndex = 0;
+
+        while (offsetY < renderedHeight) {
+          const slicePx = Math.min(pageHeightPx, renderedHeight - offsetY);
+          const pageCanvas = document.createElement('canvas');
+          pageCanvas.width = renderedWidth;
+          pageCanvas.height = slicePx;
+          const pageCtx = pageCanvas.getContext('2d');
+          if (!pageCtx) break;
+
+          pageCtx.drawImage(
+            canvas,
+            0,
+            offsetY,
+            renderedWidth,
+            slicePx,
+            0,
+            0,
+            renderedWidth,
+            slicePx,
+          );
+
+          const pageImgData = pageCanvas.toDataURL('image/png');
+          const pageHeightPt = (slicePx / renderedWidth) * targetWidth;
+          if (pageIndex > 0) {
+            pdf.addPage();
+          }
+          pdf.addImage(pageImgData, 'PNG', 0, 0, targetWidth, pageHeightPt);
+
+          offsetY += slicePx;
+          pageIndex += 1;
+        }
+      }
+
       pdf.save('antigravity-report.pdf');
     } catch (error) {
       console.error('PDF Export Error:', error);
+    } finally {
+      if (wrapper && wrapper.parentNode) {
+        wrapper.parentNode.removeChild(wrapper);
+      }
     }
   };
 
@@ -343,7 +438,7 @@ export const Dashboard: React.FC<DashboardProps> = ({ data }) => {
   return (
     <div className="animate-in fade-in slide-in-from-bottom-4 duration-700">
       <div className="flex flex-col md:flex-row md:items-center justify-between mb-6 gap-3">
-        <div className="inline-flex bg-white border border-slate-200 rounded-xl p-1 shadow-sm">
+        <div className="inline-flex bg-background border border-slate-200 rounded-xl p-1 shadow-sm">
           <button
             onClick={() => setViewMode('exec')}
             className={`h-9 px-4 rounded-lg text-xs font-black uppercase tracking-wider transition-colors ${
@@ -364,7 +459,7 @@ export const Dashboard: React.FC<DashboardProps> = ({ data }) => {
 
         <button
           onClick={exportToPDF}
-          className="px-6 h-12 bg-white border border-slate-200 rounded-xl font-bold flex items-center gap-2 hover:bg-slate-50 transition-all text-slate-700 shadow-sm group"
+          className="px-6 h-12 bg-background border border-slate-200 rounded-xl font-bold flex items-center gap-2 hover:opacity-90 transition-all text-foreground shadow-sm group"
         >
           <Download size={18} className="group-hover:translate-y-0.5 transition-transform" />
           Export PDF
@@ -378,15 +473,21 @@ export const Dashboard: React.FC<DashboardProps> = ({ data }) => {
           <div className="flex items-center gap-3 p-4 bg-blue-50 border border-blue-100 rounded-2xl">
             <span className={`px-3 py-1 rounded-full text-xs font-black uppercase tracking-wider text-white ${
               comparisonType === 'year_over_year'     ? 'bg-blue-600' :
-              comparisonType === 'period_over_period' ? 'bg-violet-600' : 'bg-slate-600'
+              comparisonType === 'period_over_period' || comparisonType === 'manual_comparison' ? 'bg-violet-600' : 'bg-slate-600'
             }`}>
               {deltaLabel}
             </span>
-            <span className="text-sm font-medium text-slate-700">
-              <span className="font-bold">{currentPeriodLabel}</span>
-              <span className="text-slate-400 mx-2">vs</span>
-              <span className="font-bold">{priorPeriodLabel}</span>
-            </span>
+            <div className="flex flex-wrap items-center gap-x-3 gap-y-1 text-sm text-slate-700">
+              <span>
+                <span className="font-black uppercase tracking-wide text-slate-500">Current Period:</span>{' '}
+                <span className="font-bold">{currentPeriodLabel}</span>
+              </span>
+              <span className="text-slate-400 font-semibold">vs</span>
+              <span>
+                <span className="font-black uppercase tracking-wide text-slate-500">Comparison Period:</span>{' '}
+                <span className="font-bold">{priorPeriodLabel}</span>
+              </span>
+            </div>
           </div>
         )}
 
@@ -452,7 +553,7 @@ export const Dashboard: React.FC<DashboardProps> = ({ data }) => {
         {/* ── Hierarchy Summaries ─────────────────────────────────────────── */}
         <div>
           <SectionHeader icon={BarChart3} title="Hierarchy Summaries by Platform" />
-          <div className="inline-flex bg-white border border-slate-200 rounded-xl p-1 shadow-sm mb-4">
+          <div className="inline-flex bg-background border border-slate-200 rounded-xl p-1 shadow-sm mb-4">
             {[
               { key: 'campaign', label: 'Campaign' },
               { key: 'adGroup', label: 'Ad Set / Ad Group' },
@@ -471,7 +572,7 @@ export const Dashboard: React.FC<DashboardProps> = ({ data }) => {
           </div>
 
           {activeHierarchyRows.length === 0 ? (
-            <div className="bg-white border border-slate-100 rounded-2xl p-5 text-sm text-slate-500">
+            <div className="bg-background border border-slate-100 rounded-2xl p-5 text-sm text-slate-500">
               No data available for this hierarchy level.
             </div>
           ) : (
@@ -479,7 +580,7 @@ export const Dashboard: React.FC<DashboardProps> = ({ data }) => {
               {Object.entries(hierarchyByPlatform)
                 .sort(([a], [b]) => a.localeCompare(b))
                 .map(([platform, rows]) => (
-                  <div key={platform} className="bg-white border border-slate-100 rounded-2xl p-5 shadow-sm">
+                  <div key={platform} className="bg-background border border-slate-100 rounded-2xl p-5 shadow-sm">
                     <div className="flex items-center justify-between mb-3">
                       <h4 className="text-sm font-black text-slate-700">{PLATFORM_DISPLAY[platform] || platform}</h4>
                       <span className="text-xs font-bold text-slate-400 uppercase tracking-wider">{rows.length} items</span>

@@ -96,7 +96,7 @@ export const CampaignTable: React.FC<CampaignTableProps> = ({ data, blendedCPA }
   const maxCPA = activeCampaigns.length > 0 ? Math.max(...activeCampaigns.map(d => d.cpa)) : Infinity;
 
   return (
-    <div className="bg-white rounded-[2rem] border border-slate-100 shadow-sm overflow-hidden">
+    <div className="bg-background rounded-[2rem] border border-slate-100 shadow-sm overflow-hidden">
       <div className="px-8 py-6 border-b border-slate-50 flex items-center justify-between">
         <h3 className="text-xl font-bold text-slate-800">Campaign Drill-Down</h3>
         <span className="px-4 py-1.5 bg-slate-50 text-slate-500 rounded-full text-xs font-bold uppercase tracking-widest">
