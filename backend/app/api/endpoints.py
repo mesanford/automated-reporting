@@ -750,6 +750,8 @@ async def sync_all_connections(
     synced_connections = 0
     synced_ad_accounts = 0
     skipped_connections: List[Dict[str, Any]] = []
+    synced_account_signatures = set()
+    
     for conn in connections:
         selected_account_ids = conn.selected_account_ids or []
         accounts_to_sync = selected_account_ids if selected_account_ids else [conn.account_id]
@@ -789,6 +791,11 @@ async def sync_all_connections(
         connection_had_data = False
         try:
             for account_id in accounts_to_sync:
+                signature = (conn.platform.lower(), str(account_id))
+                if signature in synced_account_signatures:
+                    continue
+                synced_account_signatures.add(signature)
+                
                 df = await connectors.fetch_platform_data(
                     conn.platform,
                     account_id,
