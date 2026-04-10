@@ -175,8 +175,11 @@ def _linkedin_version_candidates() -> List[str]:
     if configured:
         return [configured]
 
-    # Latest-only strategy: use the current monthly Marketing API version.
-    return [datetime.utcnow().strftime("%Y%m")]
+    # Strategy: Use the previous calendar month.
+    now = datetime.utcnow()
+    prev_year = now.year if now.month > 1 else now.year - 1
+    prev_month = now.month - 1 if now.month > 1 else 12
+    return [f"{prev_year}{prev_month:02d}"]
 
 
 def _parse_linkedin_error(response: httpx.Response, fallback: str) -> str:
@@ -1071,15 +1074,13 @@ async def _fetch_google_performance(
             SELECT
               segments.date,
               campaign.name,
-              ad_group.name,
-              ad_group_ad.ad.name,
               metrics.cost_micros,
               metrics.impressions,
               metrics.clicks,
               metrics.conversions,
               metrics.conversions_value
-            FROM ad_group_ad
-                        WHERE segments.date BETWEEN '{start}' AND '{end}'
+            FROM campaign
+            WHERE segments.date BETWEEN '{start}' AND '{end}'
                 """.format(start=window_start.isoformat(), end=window_end.isoformat())
         records: List[Dict[str, Any]] = []
         for batch in service.search_stream(customer_id=customer_id, query=query):
@@ -1087,8 +1088,8 @@ async def _fetch_google_performance(
                 records.append({
                     "date": str(row.segments.date),
                     "campaign": row.campaign.name or "Unknown Campaign",
-                    "ad_group": row.ad_group.name or "Unknown Group",
-                    "ad_asset": row.ad_group_ad.ad.name or "Unknown Ad",
+                    "ad_group": "N/A",
+                    "ad_asset": "N/A",
                     "spend": float(row.metrics.cost_micros or 0) / 1_000_000,
                     "impressions": int(row.metrics.impressions or 0),
                     "clicks": int(row.metrics.clicks or 0),

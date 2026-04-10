@@ -26,12 +26,11 @@ def _get_genai_client():
         raise RuntimeError(_genai_load_error)
 
     try:
-        module = import_module("google.generativeai")
-        module.configure(api_key=api_key)
-        _genai = module
+        module = import_module("google.genai")
+        _genai = module.Client(api_key=api_key)
         return _genai
     except Exception as exc:
-        _genai_load_error = f"Failed to load google.generativeai: {exc}"
+        _genai_load_error = f"Failed to load google.genai: {exc}"
         raise RuntimeError(_genai_load_error) from exc
 
 def generate_analysis(gemini_input: Dict[str, Any]) -> str:
@@ -39,11 +38,9 @@ def generate_analysis(gemini_input: Dict[str, Any]) -> str:
         return "Gemini API key not configured. Please set GOOGLE_API_KEY in your .env file."
 
     try:
-        genai = _get_genai_client()
+        client = _get_genai_client()
     except RuntimeError as exc:
         return str(exc)
-
-    model = genai.GenerativeModel('gemini-2.5-pro')
 
     data_json = json.dumps(gemini_input, indent=2, default=str)
 
@@ -84,7 +81,10 @@ DATA:
 """
 
     try:
-        response = model.generate_content(prompt)
+        response = client.models.generate_content(
+            model='gemini-2.5-pro',
+            contents=prompt
+        )
         return response.text
     except Exception as e:
         return f"Error generating AI analysis: {str(e)}"

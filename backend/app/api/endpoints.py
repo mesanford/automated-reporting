@@ -669,6 +669,10 @@ async def sync_connection(
     aggregated = etl.aggregate_data(
         dataframes,
         comparison_dataframes=comparison_dataframes if comparison_requested else None,
+        sync_start_date=sync_start_date,
+        sync_end_date=sync_end_date,
+        comparison_start_date=comparison_start_date,
+        comparison_end_date=comparison_end_date,
     )
     analysis = gemini.generate_analysis(aggregated["geminiInput"])
 
@@ -833,6 +837,10 @@ async def sync_all_connections(
     aggregated = etl.aggregate_data(
         dataframes,
         comparison_dataframes=comparison_dataframes if comparison_requested else None,
+        sync_start_date=sync_start_date,
+        sync_end_date=sync_end_date,
+        comparison_start_date=comparison_start_date,
+        comparison_end_date=comparison_end_date,
     )
     analysis = gemini.generate_analysis(aggregated["geminiInput"])
 

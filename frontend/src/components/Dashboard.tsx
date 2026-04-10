@@ -42,6 +42,8 @@ interface PlatformDelta {
   conversions?: Delta;
   cpa?: Delta;
   ctr?: Delta;
+  revenue?: Delta;
+  blendedROAS?: Delta;
   blendedCPA?: Delta;
   blendedCTR?: Delta;
 }
@@ -60,6 +62,8 @@ interface CampaignSummaryRow {
   cvr: number;
   cpc: number;
   spend_share: number;
+  revenue: number;
+  roas: number;
 }
 interface PlatformSummaryRow {
   platform: string;
@@ -67,6 +71,8 @@ interface PlatformSummaryRow {
   cpa: number;
   ctr: number;
   conversions: number;
+  revenue: number;
+  roas: number;
 }
 interface HierarchySummaryRow {
   level: string;
@@ -106,7 +112,7 @@ interface DashboardProps {
     chartData: ChartDataPoint[];
     scorecards: {
       totalSpend: number; totalImpressions: number; totalClicks: number;
-      totalConversions: number; blendedCPA: number; blendedCTR: number;
+      totalConversions: number; totalRevenue?: number; blendedCPA: number; blendedCTR: number;
       blendedCVR: number; blendedCPC: number; blendedCPM: number; blendedROAS: number | null;
     };
     scorecardDeltas: Record<string, Delta>;
@@ -127,9 +133,11 @@ interface DashboardProps {
 const DeltaBadge = ({ delta, label }: { delta?: Delta; label?: string }) => {
   if (!delta || delta.value === 'N/A') return null;
   const pos = delta.direction === 'positive';
+  const isNegativeValue = delta.value.startsWith('-');
+  const ArrowIcon = isNegativeValue ? TrendingDown : TrendingUp;
   return (
     <span className={`text-[10px] font-bold flex items-center gap-0.5 ${pos ? 'text-emerald-600' : 'text-red-500'}`}>
-      {pos ? <TrendingUp size={10} /> : <TrendingDown size={10} />}
+      <ArrowIcon size={10} />
       {delta.value}{label ? ` ${label}` : ''}
     </span>
   );
@@ -204,6 +212,8 @@ const PlatformCard = ({ plat, deltas, deltaLabel }: { plat: PlatformSummaryRow; 
       <div className="grid grid-cols-2 gap-3">
         {[
           { label: 'Spend', value: `$${(plat.spend ?? 0).toLocaleString(undefined, { maximumFractionDigits: 0 })}`, delta: deltas.spend },
+          { label: 'Conv. Value', value: `$${(plat.revenue ?? 0).toLocaleString(undefined, { maximumFractionDigits: 0 })}`, delta: deltas.revenue },
+          { label: 'ROAS', value: `${(plat.roas ?? 0).toFixed(2)}x`, delta: deltas.blendedROAS },
           { label: 'CPA',   value: `$${(plat.cpa ?? 0).toFixed(2)}`,                                               delta: deltas.cpa ?? deltas.blendedCPA },
           { label: 'CTR',   value: `${(plat.ctr ?? 0).toFixed(2)}%`,                                               delta: deltas.ctr ?? deltas.blendedCTR },
           { label: 'Conv.', value: String(plat.conversions ?? 0),                                                   delta: deltas.conversions },
@@ -248,6 +258,8 @@ export const Dashboard: React.FC<DashboardProps> = ({ data }) => {
       impressions: 'Impressions',
       clicks: 'Clicks',
       conversions: 'Conversions',
+      revenue: 'Revenue',
+      blendedROAS: 'Blended ROAS',
       blendedCPA: 'Blended CPA',
       blendedCTR: 'Blended CTR',
     };
@@ -521,13 +533,16 @@ export const Dashboard: React.FC<DashboardProps> = ({ data }) => {
           </div>
         </div>
 
-        {/* ── KPI Cards (2 rows of 4) ──────────────────────────────────────── */}
-        <div className="grid grid-cols-2 sm:grid-cols-4 gap-4">
+        {/* ── KPI Cards (2 rows of 5) ──────────────────────────────────────── */}
+        <div className="grid grid-cols-2 sm:grid-cols-5 gap-4">
           <KpiCard title="Total Spend"   value={scorecards.totalSpend}       icon={DollarSign}    prefix="$" delta={scorecardDeltas.spend}       deltaLabel={deltaLabel} />
+          <KpiCard title="Total Revenue" value={scorecards.totalRevenue}     icon={DollarSign}    prefix="$" delta={scorecardDeltas.revenue}     deltaLabel={deltaLabel} />
+          <KpiCard title="Blended ROAS"  value={scorecards.blendedROAS}      icon={TrendingUp}    suffix="x" delta={scorecardDeltas.blendedROAS} deltaLabel={deltaLabel} />
           <KpiCard title="Impressions"   value={scorecards.totalImpressions} icon={Eye}                      delta={scorecardDeltas.impressions} deltaLabel={deltaLabel} />
           <KpiCard title="Clicks"        value={scorecards.totalClicks}      icon={MousePointer2}            delta={scorecardDeltas.clicks}      deltaLabel={deltaLabel} />
+          
           <KpiCard title="Conversions"   value={scorecards.totalConversions} icon={Target}                   delta={scorecardDeltas.conversions} deltaLabel={deltaLabel} />
-          <KpiCard title="Blended CPA"   value={scorecards.blendedCPA}       icon={TrendingUp}    prefix="$" delta={scorecardDeltas.blendedCPA}  deltaLabel={deltaLabel} />
+          <KpiCard title="Blended CPA"   value={scorecards.blendedCPA}       icon={TrendingDown}  prefix="$" delta={scorecardDeltas.blendedCPA}  deltaLabel={deltaLabel} />
           <KpiCard title="Blended CTR"   value={scorecards.blendedCTR}       icon={Percent}       suffix="%" delta={scorecardDeltas.blendedCTR}  deltaLabel={deltaLabel} />
           <KpiCard title="Blended CVR"   value={scorecards.blendedCVR}       icon={Activity}      suffix="%" />
           <KpiCard title="Blended CPC"   value={scorecards.blendedCPC}       icon={BarChart3}     prefix="$" />
@@ -591,6 +606,8 @@ export const Dashboard: React.FC<DashboardProps> = ({ data }) => {
                           <tr className="text-slate-400 uppercase tracking-wider">
                             <th className="pb-2 pr-3">Name</th>
                             <th className="pb-2 pr-3 text-right">Spend</th>
+                            <th className="pb-2 pr-3 text-right">Conv. Value</th>
+                            <th className="pb-2 pr-3 text-right">ROAS</th>
                             <th className="pb-2 pr-3 text-right">Conv.</th>
                             <th className="pb-2 pr-3 text-right">CPA</th>
                             <th className="pb-2 pr-3 text-right">CTR</th>
@@ -605,6 +622,8 @@ export const Dashboard: React.FC<DashboardProps> = ({ data }) => {
                               <tr key={`${platform}-${idx}`} className="border-t border-slate-50">
                                 <td className="py-2 pr-3 font-medium text-slate-700">{r.name || 'Unnamed'}</td>
                                 <td className="py-2 pr-3 text-right tabular-nums">${r.spend.toLocaleString(undefined, { maximumFractionDigits: 2 })}</td>
+                                <td className="py-2 pr-3 text-right tabular-nums">${(r.revenue ?? 0).toLocaleString(undefined, { maximumFractionDigits: 2 })}</td>
+                                <td className="py-2 pr-3 text-right tabular-nums">{(r.roas ?? 0).toFixed(2)}x</td>
                                 <td className="py-2 pr-3 text-right tabular-nums">{r.conversions.toLocaleString()}</td>
                                 <td className="py-2 pr-3 text-right tabular-nums">${r.cpa.toLocaleString(undefined, { maximumFractionDigits: 2 })}</td>
                                 <td className="py-2 pr-3 text-right tabular-nums">{r.ctr.toLocaleString(undefined, { maximumFractionDigits: 2 })}%</td>
@@ -739,6 +758,31 @@ export const Dashboard: React.FC<DashboardProps> = ({ data }) => {
         </div>
         )}
 
+        {/* ── Row 3: ROAS over Time ────────────────────────────────────────── */}
+        {viewMode === 'analyst' && (
+        <div className="grid grid-cols-1 gap-6">
+          <div className="bg-white p-8 rounded-[2rem] border border-slate-100 shadow-sm">
+            <SectionHeader icon={TrendingUp} title="ROAS by Platform over Time" />
+            <div className="h-[300px]">
+              <ResponsiveContainer width="100%" height="100%">
+                <LineChart data={chartData}>
+                  <CartesianGrid strokeDasharray="3 3" vertical={false} stroke="#f1f5f9" />
+                  <XAxis dataKey="date" axisLine={false} tickLine={false} tick={{ fill: '#64748b', fontSize: 11 }} dy={10} />
+                  <YAxis axisLine={false} tickLine={false} tick={{ fill: '#64748b', fontSize: 11 }} tickFormatter={(v) => `${v}x`} />
+                  <Tooltip contentStyle={ChartTooltipStyle} formatter={(v: unknown) => [`${Number(v).toFixed(2)}x`, undefined]} />
+                  <Legend verticalAlign="top" height={36} />
+                  {activePlatforms.map(p => (
+                    <Line key={p} type="monotone" dataKey={`${p}_roas`}
+                      stroke={PLATFORM_COLORS[p]} strokeWidth={2.5}
+                      dot={false} name={PLATFORM_DISPLAY[p]} connectNulls />
+                  ))}
+                </LineChart>
+              </ResponsiveContainer>
+            </div>
+          </div>
+        </div>
+        )}
+
         {/* ── Campaign Table ───────────────────────────────────────────────── */}
         {viewMode === 'analyst' && (
           <CampaignTable data={campaignSummary} blendedCPA={scorecards.blendedCPA} />
@@ -770,7 +814,7 @@ export const Dashboard: React.FC<DashboardProps> = ({ data }) => {
                       <span key={key} className={`px-3 py-1.5 rounded-full text-xs font-bold flex items-center gap-1 ${
                         d.direction === 'positive' ? 'bg-emerald-900/60 text-emerald-300' : 'bg-red-900/60 text-red-300'
                       }`}>
-                        {d.direction === 'positive' ? <TrendingUp size={11} /> : <TrendingDown size={11} />}
+                        {d.value.startsWith('-') ? <TrendingDown size={11} /> : <TrendingUp size={11} />}
                         {labels[key]}: {d.value}
                       </span>
                     );

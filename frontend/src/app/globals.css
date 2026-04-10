@@ -2,6 +2,8 @@
 @import "tailwindcss";
 
 @theme {
+  --color-background: var(--background);
+  --color-foreground: var(--foreground);
   --color-background-neu: var(--background);
   --shadow-neu: var(--shadow-neumorphic);
   --shadow-neu-inner: var(--shadow-neumorphic-inset);

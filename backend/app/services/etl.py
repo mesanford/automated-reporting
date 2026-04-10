@@ -196,10 +196,14 @@ def _compute_deltas(current_df: pd.DataFrame, prior_df: pd.DataFrame) -> Dict:
         p_clicks = float(p['clicks'].sum())
         c_impr   = float(c['impressions'].sum())
         p_impr   = float(p['impressions'].sum())
+        c_rev    = float(c['revenue'].sum())
+        p_rev    = float(p['revenue'].sum())
         c_cpa    = _safe_divide(c_spend, c_conv)
         p_cpa    = _safe_divide(p_spend, p_conv)
         c_ctr    = _safe_divide(c_clicks, c_impr) * 100
         p_ctr    = _safe_divide(p_clicks, p_impr) * 100
+        c_roas   = _safe_divide(c_rev, c_spend)
+        p_roas   = _safe_divide(p_rev, p_spend)
         return {
             "spend": _delta(
                 c_spend,
@@ -207,6 +211,7 @@ def _compute_deltas(current_df: pd.DataFrame, prior_df: pd.DataFrame) -> Dict:
                 min_prior=MIN_PRIOR_SPEND,
                 medium_prior=500,
                 high_prior=1500,
+                lower_is_better=True,
             ),
             "impressions": _delta(
                 c_impr,
@@ -229,6 +234,13 @@ def _compute_deltas(current_df: pd.DataFrame, prior_df: pd.DataFrame) -> Dict:
                 medium_prior=25,
                 high_prior=75,
             ),
+            "revenue": _delta(
+                c_rev,
+                p_rev,
+                min_prior=100,
+                medium_prior=500,
+                high_prior=1500,
+            ),
             "blendedCPA": _delta(
                 c_cpa,
                 p_cpa,
@@ -245,6 +257,14 @@ def _compute_deltas(current_df: pd.DataFrame, prior_df: pd.DataFrame) -> Dict:
                 min_sample=MIN_PRIOR_IMPRESSIONS,
                 medium_prior=5000,
                 high_prior=20000,
+            ),
+            "blendedROAS": _delta(
+                c_roas,
+                p_roas,
+                sample_size=p_spend,
+                min_sample=MIN_PRIOR_SPEND,
+                medium_prior=500,
+                high_prior=1500,
             ),
         }
 
@@ -279,10 +299,10 @@ def _auto_split_periods(df: pd.DataFrame) -> Tuple[pd.DataFrame, pd.DataFrame, s
         years = sorted(df['date'].apply(lambda d: str(d)[:4]).unique())
         if len(years) >= 2:
             latest_year = years[-1]
-            prior_years = years[:-1]
+            prior_year  = years[-2]
             current_df  = df[df['date'].apply(lambda d: str(d)[:4]) == latest_year].copy()
-            prior_df    = df[df['date'].apply(lambda d: str(d)[:4]).isin(prior_years)].copy()
-            return current_df, prior_df, "year_over_year", latest_year, " / ".join(prior_years)
+            prior_df    = df[df['date'].apply(lambda d: str(d)[:4]) == prior_year].copy()
+            return current_df, prior_df, "year_over_year", latest_year, prior_year
 
     # Period-over-period: split at the midpoint of the sorted date list
     mid = len(dates) // 2
@@ -321,6 +341,10 @@ def _build_hierarchy_summary(
 def aggregate_data(
     dataframes: List[pd.DataFrame],
     comparison_dataframes: Optional[List[pd.DataFrame]] = None,
+    sync_start_date: Optional[str] = None,
+    sync_end_date: Optional[str] = None,
+    comparison_start_date: Optional[str] = None,
+    comparison_end_date: Optional[str] = None,
 ) -> Dict:
     if not dataframes:
         return {
@@ -352,16 +376,37 @@ def aggregate_data(
     if comparison_dataframes is not None:
         if comparison_dataframes:
             comparison_combined = pd.concat(comparison_dataframes, ignore_index=True).fillna(0)
+            for col in UNIVERSAL_COLUMNS:
+                if col not in comparison_combined.columns:
+                    comparison_combined[col] = 0
+            
+            current_period_df  = combined_df
+            prior_period_df    = comparison_combined
         else:
-            comparison_combined = pd.DataFrame(columns=combined_df.columns)
-        for col in UNIVERSAL_COLUMNS:
-            if col not in comparison_combined.columns:
-                comparison_combined[col] = 0
-        current_period_df  = combined_df
-        prior_period_df    = comparison_combined
-        comparison_type    = "manual_comparison"
-        current_label      = _period_label(combined_df)
-        prior_label        = _period_label(comparison_combined)
+            current_period_df = combined_df
+            prior_period_df = pd.DataFrame(columns=combined_df.columns)
+            comparison_combined = prior_period_df
+        
+        comparison_type = "manual_comparison"
+        if not combined_df.empty and not comparison_combined.empty:
+            current_start = pd.to_datetime(combined_df['date'].min())
+            prior_start = pd.to_datetime(comparison_combined['date'].min())
+            if pd.notnull(current_start) and pd.notnull(prior_start):
+                diff_days = (current_start - prior_start).days
+                if 360 <= diff_days <= 370:
+                    comparison_type = "year_over_year"
+                else:
+                    comparison_type = "period_over_period"
+
+        if sync_start_date and sync_end_date:
+            current_label = f"{sync_start_date} – {sync_end_date}"
+        else:
+            current_label = _period_label(combined_df)
+            
+        if comparison_start_date and comparison_end_date:
+            prior_label = f"{comparison_start_date} – {comparison_end_date}"
+        else:
+            prior_label = _period_label(comparison_combined)
     else:
         current_period_df, prior_period_df, comparison_type, current_label, prior_label = (
             _auto_split_periods(combined_df)
@@ -387,6 +432,7 @@ def aggregate_data(
         "totalImpressions": total_impressions,
         "totalClicks":      total_clicks,
         "totalConversions": total_conversions,
+        "totalRevenue":     round(total_revenue, 2),
         "blendedCPA":       round(_safe_divide(total_spend, total_conversions), 2),
         "blendedCTR":       round(_safe_divide(total_clicks, total_impressions) * 100, 2),
         "blendedCVR":       round(_safe_divide(total_conversions, total_clicks) * 100, 2),
@@ -412,12 +458,12 @@ def aggregate_data(
         return pt
 
     chart_df = _pivot_metric('spend')
-    for m in ('cpa', 'ctr'):
+    for m in ('cpa', 'ctr', 'roas', 'revenue'):
         chart_df = chart_df.merge(_pivot_metric(m), on='date', how='left')
 
     all_platforms = ['google', 'meta', 'linkedin', 'tiktok', 'microsoft']
     for p in all_platforms:
-        for suffix in ('_spend', '_cpa', '_ctr'):
+        for suffix in ('_spend', '_cpa', '_ctr', '_roas', '_revenue'):
             col = f"{p}{suffix}"
             if col not in chart_df.columns:
                 chart_df[col] = 0
@@ -491,7 +537,7 @@ def aggregate_data(
         "period_deltas":      scorecard_deltas,
         "platform_summary": [
             {k: v for k, v in row.items()
-             if k in ('platform', 'spend', 'impressions', 'clicks', 'conversions',
+             if k in ('platform', 'spend', 'revenue', 'impressions', 'clicks', 'conversions',
                       'cpa', 'ctr', 'cvr', 'cpc', 'roas', 'spend_share')}
             for row in platform_summary
         ],

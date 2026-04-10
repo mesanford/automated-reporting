@@ -117,6 +117,8 @@ export const CampaignTable: React.FC<CampaignTableProps> = ({ data, blendedCPA }
               {renderHeaderCell('clicks', 'Clicks', true)}
               {renderHeaderCell('cvr', 'CVR', true)}
               {renderHeaderCell('conversions', 'Conv.', true)}
+              {renderHeaderCell('revenue', 'Conv. Value', true)}
+              {renderHeaderCell('roas', 'ROAS', true)}
               {renderHeaderCell('cpc', 'CPC', true)}
               {renderHeaderCell('cpa', 'CPA', true)}
             </tr>
@@ -159,6 +161,12 @@ export const CampaignTable: React.FC<CampaignTableProps> = ({ data, blendedCPA }
                   </td>
                   <td className="px-5 py-3.5 text-sm font-medium text-slate-600 text-right tabular-nums">
                     {(row.conversions ?? 0).toLocaleString()}
+                  </td>
+                  <td className="px-5 py-3.5 text-sm font-medium text-slate-600 text-right tabular-nums">
+                    ${(row.revenue ?? 0).toLocaleString(undefined, { minimumFractionDigits: 2 })}
+                  </td>
+                  <td className="px-5 py-3.5 text-sm font-medium text-slate-600 text-right tabular-nums">
+                    {(row.roas ?? 0).toFixed(2)}x
                   </td>
                   <td className="px-5 py-3.5 text-sm font-medium text-slate-600 text-right tabular-nums">
                     ${(row.cpc ?? 0).toFixed(2)}

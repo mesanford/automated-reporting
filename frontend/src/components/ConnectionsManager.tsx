@@ -36,6 +36,15 @@ const shiftIsoDate = (daysAgo: number) => {
   return toIsoDate(value);
 };
 
+const getCurrentQuarterStartIsoDate = () => {
+  const value = new Date();
+  const quarterMonth = Math.floor(value.getMonth() / 3) * 3;
+  value.setHours(12, 0, 0, 0);
+  value.setMonth(quarterMonth);
+  value.setDate(1);
+  return toIsoDate(value);
+};
+
 const diffDaysInclusive = (startDate: string, endDate: string) => {
   const start = parseIsoDateParts(startDate);
   const end = parseIsoDateParts(endDate);
@@ -69,6 +78,20 @@ const deriveComparisonRange = (startDate: string, endDate: string) => {
   return {
     comparisonStartDate: shiftExistingIsoDate(startDate, -dayCount),
     comparisonEndDate: shiftExistingIsoDate(endDate, -dayCount),
+  };
+};
+
+const shiftYearIsoDate = (dateStr: string, yearsOffset: number) => {
+  const parsed = parseIsoDateParts(dateStr);
+  if (!parsed) return dateStr;
+  const value = new Date(Date.UTC(parsed.year + yearsOffset, parsed.month - 1, parsed.day));
+  return toUtcIsoDate(value);
+};
+
+const deriveComparisonRangeYearly = (startDate: string, endDate: string) => {
+  return {
+    comparisonStartDate: shiftYearIsoDate(startDate, -1),
+    comparisonEndDate: shiftYearIsoDate(endDate, -1),
   };
 };
 
@@ -118,7 +141,7 @@ interface ConnectionsManagerProps {
   setUploadStep: (step: string) => void;
 }
 
-type SyncPreset = '7d' | '14d' | '30d' | 'custom';
+type SyncPreset = '30d' | '60d' | 'current_quarter' | 'custom';
 
 type SyncTarget =
   | { type: 'single'; connectionId: number }
@@ -163,16 +186,19 @@ export const ConnectionsManager: React.FC<ConnectionsManagerProps> = ({
   const [diagnosticsResults, setDiagnosticsResults] = useState<ConnectionDiagnostic[]>([]);
   const [syncingConnectionId, setSyncingConnectionId] = useState<number | null>(null);
   const [pendingSyncTarget, setPendingSyncTarget] = useState<SyncTarget | null>(null);
-  const [syncPreset, setSyncPreset] = useState<SyncPreset>('14d');
-  const [syncStartDate, setSyncStartDate] = useState<string>(shiftIsoDate(13));
+  const [syncPreset, setSyncPreset] = useState<SyncPreset>('30d');
+  const [syncStartDate, setSyncStartDate] = useState<string>(shiftIsoDate(29));
   const [syncEndDate, setSyncEndDate] = useState<string>(shiftIsoDate(0));
-  const defaultComparisonRange = deriveComparisonRange(shiftIsoDate(13), shiftIsoDate(0));
+  const defaultComparisonRange = deriveComparisonRange(shiftIsoDate(29), shiftIsoDate(0));
   const [comparisonStartDate, setComparisonStartDate] = useState<string>(defaultComparisonRange.comparisonStartDate);
   const [comparisonEndDate, setComparisonEndDate] = useState<string>(defaultComparisonRange.comparisonEndDate);
   const [comparisonTouched, setComparisonTouched] = useState(false);
+  const [comparisonMatchMode, setComparisonMatchMode] = useState<'previous_period' | 'previous_year'>('previous_period');
 
-  const syncComparisonToCurrent = (startDate: string, endDate: string) => {
-    const next = deriveComparisonRange(startDate, endDate);
+  const syncComparisonToCurrent = (startDate: string, endDate: string, mode: 'previous_period' | 'previous_year' = comparisonMatchMode) => {
+    const next = mode === 'previous_year' 
+      ? deriveComparisonRangeYearly(startDate, endDate)
+      : deriveComparisonRange(startDate, endDate);
     setComparisonStartDate(next.comparisonStartDate);
     setComparisonEndDate(next.comparisonEndDate);
   };
@@ -181,7 +207,7 @@ export const ConnectionsManager: React.FC<ConnectionsManagerProps> = ({
     setSyncStartDate(startDate);
     setSyncEndDate(endDate);
     if (forceComparisonSync || !comparisonTouched) {
-      syncComparisonToCurrent(startDate, endDate);
+      syncComparisonToCurrent(startDate, endDate, comparisonMatchMode);
     }
   };
 
@@ -191,9 +217,16 @@ export const ConnectionsManager: React.FC<ConnectionsManagerProps> = ({
       return;
     }
 
-    const presetDays = preset === '7d' ? 7 : preset === '30d' ? 30 : 14;
     const nextEndDate = shiftIsoDate(0);
-    const nextStartDate = shiftIsoDate(presetDays - 1);
+    let nextStartDate: string;
+    
+    if (preset === 'current_quarter') {
+      nextStartDate = getCurrentQuarterStartIsoDate();
+    } else {
+      const presetDays = preset === '30d' ? 30 : 60;
+      nextStartDate = shiftIsoDate(presetDays - 1);
+    }
+    
     setComparisonTouched(false);
     updateCurrentRange(nextStartDate, nextEndDate, true);
   };
@@ -201,8 +234,8 @@ export const ConnectionsManager: React.FC<ConnectionsManagerProps> = ({
   const openSyncModal = (target: SyncTarget) => {
     setPendingSyncTarget(target);
     const nextEndDate = shiftIsoDate(0);
-    const nextStartDate = shiftIsoDate(13);
-    setSyncPreset('14d');
+    const nextStartDate = shiftIsoDate(29);
+    setSyncPreset('30d');
     setComparisonTouched(false);
     updateCurrentRange(nextStartDate, nextEndDate, true);
   };
@@ -355,7 +388,9 @@ export const ConnectionsManager: React.FC<ConnectionsManagerProps> = ({
     const dayCount = diffDaysInclusive(syncStartDate, syncEndDate);
     const effectiveComparisonRange = comparisonTouched
       ? { comparisonStartDate, comparisonEndDate }
-      : deriveComparisonRange(syncStartDate, syncEndDate);
+      : (comparisonMatchMode === 'previous_year'
+          ? deriveComparisonRangeYearly(syncStartDate, syncEndDate)
+          : deriveComparisonRange(syncStartDate, syncEndDate));
     const comparisonDayCount = diffDaysInclusive(
       effectiveComparisonRange.comparisonStartDate,
       effectiveComparisonRange.comparisonEndDate,
@@ -864,9 +899,9 @@ export const ConnectionsManager: React.FC<ConnectionsManagerProps> = ({
 
             <div className="grid grid-cols-2 gap-2 mb-4">
               {[
-                { id: '7d', label: 'Last 7 days' },
-                { id: '14d', label: 'Last 14 days' },
                 { id: '30d', label: 'Last 30 days' },
+                { id: '60d', label: 'Last 60 days' },
+                { id: 'current_quarter', label: 'Current Quarter' },
                 { id: 'custom', label: 'Custom range' },
               ].map((option) => {
                 const isActive = syncPreset === option.id;
@@ -916,20 +951,35 @@ export const ConnectionsManager: React.FC<ConnectionsManagerProps> = ({
               </label>
             </div>
 
-            <div className="mt-4 flex items-center justify-between rounded-xl border border-slate-100 bg-slate-50 px-3 py-2">
+            <div className="mt-4 flex flex-col gap-2 rounded-xl border border-slate-100 bg-slate-50 px-3 py-3">
               <div>
                 <p className="text-xs font-black uppercase tracking-wide text-slate-500">Comparison period</p>
-                <p className="text-xs text-slate-500">Auto-filled to the immediately preceding window. You can adjust it.</p>
+                <p className="text-xs text-slate-500">Auto-filled based on the current window. You can adjust it.</p>
               </div>
-              <button
-                onClick={() => {
-                  setComparisonTouched(false);
-                  syncComparisonToCurrent(syncStartDate, syncEndDate);
-                }}
-                className="text-xs font-bold text-violet-700 hover:text-violet-800"
-              >
-                Match previous period
-              </button>
+              <div className="flex bg-white rounded-lg border border-slate-200 overflow-hidden shadow-sm self-start mt-1">
+                <button
+                  type="button"
+                  onClick={() => {
+                    setComparisonMatchMode('previous_period');
+                    setComparisonTouched(false);
+                    syncComparisonToCurrent(syncStartDate, syncEndDate, 'previous_period');
+                  }}
+                  className={`px-3 py-1.5 text-[10px] font-black uppercase tracking-wider transition-colors ${comparisonMatchMode === 'previous_period' ? 'bg-violet-600 text-white' : 'text-slate-500 hover:bg-slate-50'}`}
+                >
+                  Previous Period
+                </button>
+                <button
+                  type="button"
+                  onClick={() => {
+                    setComparisonMatchMode('previous_year');
+                    setComparisonTouched(false);
+                    syncComparisonToCurrent(syncStartDate, syncEndDate, 'previous_year');
+                  }}
+                  className={`px-3 py-1.5 text-[10px] font-black uppercase tracking-wider transition-colors ${comparisonMatchMode === 'previous_year' ? 'bg-violet-600 text-white' : 'text-slate-500 hover:bg-slate-50'}`}
+                >
+                  Previous Year
+                </button>
+              </div>
             </div>
 
             <div className="mt-4 grid grid-cols-2 gap-3">
