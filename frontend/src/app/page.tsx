@@ -4,10 +4,14 @@ import React, { useState, useEffect } from 'react';
 import { UploadZone } from '@/components/UploadZone';
 import { Dashboard } from '@/components/Dashboard';
 import { ConnectionsManager } from '@/components/ConnectionsManager';
-import { 
-  ShieldCheck, Zap, ArrowLeft, Share2,
-  History, Calendar, Layers, Globe
+import Link from 'next/link';
+import {
+  ShieldCheck, Zap, ArrowLeft, Share2, FileText,
+  History, Calendar, Layers, Globe, MessageSquare, LogOut, Settings, Activity as ActivityIcon
 } from 'lucide-react';
+import { useAuth } from '@/lib/auth';
+import { WorkspaceSwitcher } from '@/components/WorkspaceSwitcher';
+import { filterReportByPlatforms } from '@/lib/dashboard-filter';
 
 const API_BASE = process.env.NEXT_PUBLIC_API_BASE_URL ?? 'http://localhost:8000';
 
@@ -87,6 +91,32 @@ interface PlatformSummaryRow {
   cpa: number;
   ctr: number;
   conversions: number;
+}
+
+interface SavedView {
+  id: number;
+  name: string;
+  visibility: 'private' | 'workspace';
+  is_default: boolean;
+  config: {
+    platform_filter?: string[];
+    [k: string]: unknown;
+  };
+}
+
+interface DashboardBudget {
+  id: number;
+  name: string;
+  scope_type: 'workspace' | 'platform' | 'connection';
+  scope_key: string | null;
+  is_active: boolean;
+  pacing: {
+    period_label: string;
+    amount: number;
+    spent: number;
+    pct_used: number;
+    status: 'on_pace' | 'under_pace' | 'over_pace' | 'exhausted';
+  } | null;
 }
 
 interface HierarchySummaryRow {
@@ -182,6 +212,7 @@ interface ApiHistoryReport {
 }
 
 export default function Home() {
+  const { user, signOut } = useAuth();
   const [reportData, setReportData] = useState<DashboardData | null>(null);
   const [isUploading, setIsUploading] = useState(false);
   const [uploadStep, setUploadStep] = useState<string>('');
@@ -189,9 +220,65 @@ export default function Home() {
   const [showHistory, setShowHistory] = useState(false);
   const [activeTab, setActiveTab] = useState<'upload' | 'accounts'>('upload');
 
+  const [budgets, setBudgets] = useState<DashboardBudget[]>([]);
+  const [customKpis, setCustomKpis] = useState<import('@/components/Dashboard').KpiCustomEntry[]>([]);
+
+  // Saved views + platform filter. The filter is the only knob right now,
+  // but the SavedView config is JSON, so future knobs (KPI focus,
+  // hierarchy default, etc.) are additive.
+  const [savedViews, setSavedViews] = useState<SavedView[]>([]);
+  const [activeViewId, setActiveViewId] = useState<number | null>(null);
+  const [platformFilter, setPlatformFilter] = useState<string[]>([]);
+
   useEffect(() => {
     fetchHistory();
+    fetchBudgets();
+    fetchSavedViews();
   }, []);
+
+  const fetchSavedViews = async () => {
+    try {
+      const wsId = typeof window !== 'undefined'
+        ? Number(window.localStorage.getItem('antigravity:active_workspace_id') || 0)
+        : 0;
+      if (!wsId) return;
+      const { apiJson } = await import('@/lib/api');
+      const rows = await apiJson<SavedView[]>(`/api/workspaces/${wsId}/views`);
+      setSavedViews(rows);
+      // Auto-apply the user's default view, if any.
+      const def = rows.find((v) => v.is_default);
+      if (def) {
+        setActiveViewId(def.id);
+        setPlatformFilter(def.config?.platform_filter ?? []);
+      }
+    } catch {
+      // Silent — dashboard works fine without saved views.
+    }
+  };
+
+  // When a report is loaded, fetch the workspace's custom KPIs evaluated
+  // against this specific report. Failure is silent — built-in scorecards
+  // still render either way.
+  useEffect(() => {
+    const reportId = reportData?.id;
+    if (!reportId) {
+      setCustomKpis([]);
+      return;
+    }
+    let cancelled = false;
+    (async () => {
+      try {
+        const { apiJson } = await import('@/lib/api');
+        const rows = await apiJson<import('@/components/Dashboard').KpiCustomEntry[]>(
+          `/api/reports/${reportId}/kpis`,
+        );
+        if (!cancelled) setCustomKpis(rows);
+      } catch {
+        if (!cancelled) setCustomKpis([]);
+      }
+    })();
+    return () => { cancelled = true; };
+  }, [reportData?.id]);
 
   const fetchHistory = async () => {
     try {
@@ -200,6 +287,23 @@ export default function Home() {
       setHistory(Array.isArray(data) ? (data as ApiHistoryReport[]) : []);
     } catch (error) {
       console.error('Error fetching history:', error);
+    }
+  };
+
+  const fetchBudgets = async () => {
+    // Use the workspace-scoped budgets endpoint. The workspace is implicit
+    // via the X-Workspace-Id header that lib/api.ts attaches; we can grab
+    // the active id from localStorage to avoid an extra fetch.
+    try {
+      const wsId = typeof window !== 'undefined'
+        ? Number(window.localStorage.getItem('antigravity:active_workspace_id') || 0)
+        : 0;
+      if (!wsId) return;
+      const { apiJson } = await import('@/lib/api');
+      const rows = await apiJson<DashboardBudget[]>(`/api/workspaces/${wsId}/budgets`);
+      setBudgets(rows.filter((b) => b.is_active && b.pacing));
+    } catch {
+      // Silent — banner just doesn't render if anything goes sideways.
     }
   };
 
@@ -277,34 +381,41 @@ export default function Home() {
   const reset = () => setReportData(null);
 
   const handleShareReport = async () => {
-    if (!reportData) return;
-
-    const summary = [
-      `Spend: $${reportData.scorecards.totalSpend.toLocaleString()}`,
-      `Conversions: ${reportData.scorecards.totalConversions.toLocaleString()}`,
-      `Blended CPA: $${reportData.scorecards.blendedCPA.toLocaleString()}`,
-    ].join(' | ');
-
-    const text = `Performance Snapshot\n${summary}`;
-
-    if (navigator.share) {
-      try {
-        await navigator.share({
-          title: 'Performance Snapshot',
-          text,
-          url: window.location.href,
-        });
-        return;
-      } catch {
-        // Fallback to clipboard below.
-      }
+    if (!reportData?.id) {
+      alert('This report needs to be saved before it can be shared.');
+      return;
     }
-
+    const wsId = typeof window !== 'undefined'
+      ? Number(window.localStorage.getItem('antigravity:active_workspace_id') || 0)
+      : 0;
+    if (!wsId) {
+      alert('No active workspace.');
+      return;
+    }
     try {
-      await navigator.clipboard.writeText(`${text}\n${window.location.href}`);
-      alert('Report summary link copied to clipboard.');
-    } catch {
-      alert('Unable to share automatically. Please copy the page URL manually.');
+      const { apiJson } = await import('@/lib/api');
+      const res = await apiJson<{ token: string; expires_at: string }>(
+        `/api/workspaces/${wsId}/reports/${reportData.id}/share`,
+        {
+          method: 'POST',
+          body: JSON.stringify({ expires_in_days: 30 }),
+        },
+      );
+      const url = `${window.location.origin}/share/${res.token}`;
+      try {
+        await navigator.clipboard.writeText(url);
+        alert(
+          `Public link copied to clipboard. Expires ${new Date(res.expires_at).toLocaleDateString()}.\n\n${url}`,
+        );
+      } catch {
+        prompt('Public link (copy manually):', url);
+      }
+    } catch (err) {
+      alert(
+        err instanceof Error
+          ? `Failed to mint share link: ${err.message}`
+          : 'Failed to mint share link.',
+      );
     }
   };
 
@@ -350,18 +461,57 @@ export default function Home() {
           </div>
           
           <div className="hidden md:flex items-center gap-8 font-semibold text-sm text-slate-500">
-            <button 
+            <button
               onClick={() => setShowHistory(!showHistory)}
               className={`flex items-center gap-2 transition-colors ${showHistory ? 'text-blue-600' : 'hover:text-blue-600'}`}
             >
               <History size={18} />
               History
             </button>
+            <Link
+              href="/chat"
+              className="flex items-center gap-2 transition-colors hover:text-blue-600"
+            >
+              <MessageSquare size={18} />
+              Chat
+            </Link>
+            <Link
+              href="/reports"
+              className="flex items-center gap-2 transition-colors hover:text-blue-600"
+            >
+              <FileText size={18} />
+              Reports
+            </Link>
+            <Link
+              href="/activity"
+              className="flex items-center gap-2 transition-colors hover:text-blue-600"
+            >
+              <ActivityIcon size={18} />
+              Activity
+            </Link>
+            <Link
+              href="/settings"
+              className="flex items-center gap-2 transition-colors hover:text-blue-600"
+            >
+              <Settings size={18} />
+              Settings
+            </Link>
             <div className="h-4 w-px bg-slate-200"></div>
             <div className="flex items-center gap-2 text-emerald-600 bg-emerald-50 px-3 py-1.5 rounded-full">
               <ShieldCheck size={16} />
               <span>System Online</span>
             </div>
+            <WorkspaceSwitcher />
+            {user && (
+              <button
+                onClick={() => void signOut()}
+                title={user.email ?? user.uid}
+                className="flex items-center gap-2 transition-colors hover:text-blue-600"
+              >
+                <LogOut size={16} />
+                <span className="hidden lg:inline truncate max-w-[140px]">{user.email ?? 'Sign out'}</span>
+              </button>
+            )}
           </div>
         </div>
       </nav>
@@ -418,6 +568,13 @@ export default function Home() {
           <div className="max-w-7xl mx-auto px-6 py-12">
             {!reportData ? (
               <div className="max-w-3xl mx-auto py-12 animate-in fade-in slide-in-from-top-4 duration-1000">
+                {/* Onboarding card: shown when the workspace has no reports yet.
+                    Dismissed via localStorage so returning users don't see it. */}
+                <OnboardingCard
+                  hasReports={history.length > 0}
+                  onJumpToConnections={() => setActiveTab('accounts')}
+                />
+
                 <div className="text-center mb-12">
                   <div className="inline-flex items-center gap-2 px-4 py-2 bg-blue-50 text-blue-600 rounded-full text-sm font-bold mb-6">
                     <Zap size={16} />
@@ -509,7 +666,59 @@ export default function Home() {
                   </div>
                 </div>
 
-                <Dashboard data={reportData} />
+                <BudgetBanner budgets={budgets} />
+
+                <ViewToolbar
+                  views={savedViews}
+                  activeViewId={activeViewId}
+                  onSelectView={(id) => {
+                    setActiveViewId(id);
+                    const v = savedViews.find((sv) => sv.id === id);
+                    setPlatformFilter(v?.config?.platform_filter ?? []);
+                  }}
+                  platformFilter={platformFilter}
+                  availablePlatforms={(reportData?.platformSummary ?? []).map(
+                    (p) => p.platform,
+                  )}
+                  onTogglePlatform={(p) =>
+                    setPlatformFilter((prev) =>
+                      prev.includes(p) ? prev.filter((x) => x !== p) : [...prev, p],
+                    )
+                  }
+                  onClearFilter={() => {
+                    setPlatformFilter([]);
+                    setActiveViewId(null);
+                  }}
+                  onSaveView={async () => {
+                    const name = prompt('Name for this view?');
+                    if (!name) return;
+                    const wsId = Number(window.localStorage.getItem('antigravity:active_workspace_id') || 0);
+                    const { apiJson } = await import('@/lib/api');
+                    await apiJson(`/api/workspaces/${wsId}/views`, {
+                      method: 'POST',
+                      body: JSON.stringify({
+                        name,
+                        config: { platform_filter: platformFilter },
+                      }),
+                    });
+                    await fetchSavedViews();
+                  }}
+                />
+
+                <Dashboard
+                  data={
+                    platformFilter.length > 0
+                      ? filterReportByPlatforms(
+                          reportData as unknown as Parameters<typeof filterReportByPlatforms>[0],
+                          new Set(platformFilter.map((p) => p.toLowerCase())),
+                        ) as unknown as typeof reportData
+                      : reportData
+                  }
+                  customKpis={customKpis}
+                  baseCurrency={typeof window !== 'undefined'
+                    ? (window.localStorage.getItem('antigravity:active_workspace_currency') || 'USD')
+                    : 'USD'}
+                />
               </div>
             )}
           </div>
@@ -522,5 +731,238 @@ export default function Home() {
         <div className="absolute bottom-[-10%] left-[-10%] w-[50%] h-[50%] bg-indigo-50/50 rounded-full blur-[120px]"></div>
       </div>
     </main>
+  );
+}
+
+const PACE_TONE: Record<NonNullable<DashboardBudget['pacing']>['status'], { bar: string; pill: string; label: string }> = {
+  on_pace:    { bar: 'bg-emerald-500', pill: 'bg-emerald-100 text-emerald-700', label: 'on pace' },
+  under_pace: { bar: 'bg-blue-500',    pill: 'bg-blue-100 text-blue-700',       label: 'under pace' },
+  over_pace:  { bar: 'bg-amber-500',   pill: 'bg-amber-100 text-amber-700',     label: 'over pace' },
+  exhausted:  { bar: 'bg-red-500',     pill: 'bg-red-100 text-red-700',         label: 'exhausted' },
+};
+
+function BudgetBanner({ budgets }: { budgets: DashboardBudget[] }) {
+  if (budgets.length === 0) return null;
+  return (
+    <Link
+      href="/settings"
+      className="block mb-8 border border-slate-100 rounded-2xl p-4 bg-white shadow-sm hover:border-blue-200 transition-colors"
+    >
+      <div className="flex items-center justify-between mb-3">
+        <span className="text-xs uppercase tracking-wider font-black text-slate-400">
+          Budgets — {budgets[0]?.pacing?.period_label ?? ''}
+        </span>
+        <span className="text-xs text-slate-400">manage in settings →</span>
+      </div>
+      <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-3">
+        {budgets.slice(0, 6).map((b) => {
+          const p = b.pacing!;
+          const tone = PACE_TONE[p.status];
+          const pct = Math.min(100, Math.round(p.pct_used * 100));
+          return (
+            <div key={b.id} className="border border-slate-50 rounded-xl p-3">
+              <div className="flex items-center justify-between mb-2">
+                <div className="font-bold text-sm text-slate-800 truncate">{b.name}</div>
+                <span className={`text-[10px] font-bold uppercase tracking-wider px-2 py-0.5 rounded-full ${tone.pill}`}>
+                  {tone.label}
+                </span>
+              </div>
+              <div className="w-full h-1.5 bg-slate-100 rounded-full overflow-hidden">
+                <div className={`h-full ${tone.bar} transition-all`} style={{ width: `${pct}%` }} />
+              </div>
+              <div className="text-[11px] text-slate-500 mt-1">
+                ${p.spent.toLocaleString()} / ${p.amount.toLocaleString()} ({pct}%)
+              </div>
+            </div>
+          );
+        })}
+      </div>
+    </Link>
+  );
+}
+
+const ONBOARDING_DISMISSED_KEY = 'antigravity:onboarding_dismissed';
+
+function OnboardingCard({
+  hasReports,
+  onJumpToConnections,
+}: {
+  hasReports: boolean;
+  onJumpToConnections: () => void;
+}) {
+  const [dismissed, setDismissed] = useState(false);
+
+  useEffect(() => {
+    if (typeof window === 'undefined') return;
+    setDismissed(window.localStorage.getItem(ONBOARDING_DISMISSED_KEY) === '1');
+  }, []);
+
+  // Returning users with reports have already onboarded — hide implicitly.
+  if (hasReports || dismissed) return null;
+
+  function dismiss() {
+    if (typeof window !== 'undefined') {
+      window.localStorage.setItem(ONBOARDING_DISMISSED_KEY, '1');
+    }
+    setDismissed(true);
+  }
+
+  return (
+    <div className="mb-8 border border-blue-100 rounded-2xl p-6 bg-gradient-to-br from-blue-50 to-indigo-50 shadow-sm relative">
+      <button
+        onClick={dismiss}
+        className="absolute top-3 right-3 text-slate-400 hover:text-slate-700 text-xs font-bold"
+      >
+        Dismiss
+      </button>
+      <div className="flex items-center gap-2 mb-4">
+        <Zap size={16} className="text-blue-600" />
+        <span className="text-xs uppercase tracking-wider font-black text-blue-700">
+          Welcome — three steps to your first report
+        </span>
+      </div>
+      <ol className="grid grid-cols-1 md:grid-cols-3 gap-4">
+        <OnboardStep
+          n={1}
+          title="Connect a platform"
+          body="Authenticate Google Ads, Meta, LinkedIn, TikTok, or Microsoft. OAuth happens in your browser; we encrypt the refresh token at rest."
+          actionLabel="Open Accounts"
+          onAction={onJumpToConnections}
+        />
+        <OnboardStep
+          n={2}
+          title="Run a sync"
+          body="Pick a date range and click Sync. The first run takes a minute; the dashboard updates when the report is ready."
+        />
+        <OnboardStep
+          n={3}
+          title="Ask Gemini"
+          body="Use the Chat tab to ask 'Which platform had the worst CPA last week?' — answers stream live with inline charts."
+        />
+      </ol>
+      <p className="text-[11px] text-slate-500 mt-4">
+        Already familiar? Set up alerts, budgets, and recurring syncs in <Link href="/settings" className="text-blue-600 hover:underline">Settings</Link>.
+      </p>
+    </div>
+  );
+}
+
+function OnboardStep({
+  n, title, body, actionLabel, onAction,
+}: {
+  n: number;
+  title: string;
+  body: string;
+  actionLabel?: string;
+  onAction?: () => void;
+}) {
+  return (
+    <li className="border border-blue-100 rounded-xl p-4 bg-background">
+      <div className="text-xs font-black text-blue-700 mb-1">Step {n}</div>
+      <div className="text-sm font-bold text-slate-900">{title}</div>
+      <div className="text-xs text-slate-600 mt-2">{body}</div>
+      {actionLabel && (
+        <button
+          onClick={onAction}
+          className="mt-3 text-xs font-bold text-blue-600 hover:text-blue-800"
+        >
+          {actionLabel} →
+        </button>
+      )}
+    </li>
+  );
+}
+
+function ViewToolbar({
+  views,
+  activeViewId,
+  onSelectView,
+  platformFilter,
+  availablePlatforms,
+  onTogglePlatform,
+  onClearFilter,
+  onSaveView,
+}: {
+  views: SavedView[];
+  activeViewId: number | null;
+  onSelectView: (id: number) => void;
+  platformFilter: string[];
+  availablePlatforms: string[];
+  onTogglePlatform: (p: string) => void;
+  onClearFilter: () => void;
+  onSaveView: () => Promise<void> | void;
+}) {
+  const allPlatforms = Array.from(new Set(availablePlatforms.map((p) => p.toLowerCase()))).sort();
+  if (allPlatforms.length === 0 && views.length === 0) return null;
+
+  return (
+    <div className="mb-6 border border-slate-100 rounded-2xl bg-white shadow-sm p-3 flex flex-wrap items-center gap-3">
+      {/* Saved view selector */}
+      {views.length > 0 && (
+        <label className="flex items-center gap-2 text-xs text-slate-500">
+          <span className="font-bold uppercase tracking-wider">View</span>
+          <select
+            value={activeViewId ?? ''}
+            onChange={(e) => {
+              const id = Number(e.target.value);
+              if (id) onSelectView(id);
+              else onClearFilter();
+            }}
+            className="text-sm font-semibold rounded-lg border border-slate-200 px-2 py-1.5"
+          >
+            <option value="">All data</option>
+            {views.map((v) => (
+              <option key={v.id} value={v.id}>
+                {v.name}{v.visibility === 'workspace' ? ' (team)' : ''}
+              </option>
+            ))}
+          </select>
+        </label>
+      )}
+
+      {/* Platform chips */}
+      {allPlatforms.length > 0 && (
+        <div className="flex items-center gap-1.5 flex-wrap">
+          <span className="text-xs font-bold uppercase tracking-wider text-slate-500 mr-1">
+            Platforms
+          </span>
+          {allPlatforms.map((p) => {
+            const active = platformFilter.includes(p);
+            return (
+              <button
+                key={p}
+                onClick={() => onTogglePlatform(p)}
+                className={`text-xs font-bold px-2.5 py-1 rounded-full border transition-colors ${
+                  active
+                    ? 'bg-blue-600 text-white border-blue-600'
+                    : 'bg-white text-slate-600 border-slate-200 hover:border-blue-300'
+                }`}
+              >
+                {p}
+              </button>
+            );
+          })}
+          {platformFilter.length > 0 && (
+            <button
+              onClick={onClearFilter}
+              className="text-xs text-slate-500 hover:text-blue-600 ml-1"
+            >
+              clear
+            </button>
+          )}
+        </div>
+      )}
+
+      <div className="ml-auto">
+        {platformFilter.length > 0 && (
+          <button
+            onClick={() => void onSaveView()}
+            className="text-xs font-bold text-blue-600 hover:text-blue-800 underline"
+          >
+            Save as view
+          </button>
+        )}
+      </div>
+    </div>
   );
 }

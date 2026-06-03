@@ -30,6 +30,17 @@ jobs:
       - name: Compile Python sources
         run: python -m compileall -q .
 
+      - name: Apply migrations to a temp SQLite
+        env:
+          DATABASE_URL: sqlite:///./ci-test.db
+        run: alembic upgrade head
+
+      - name: Run pytest
+        env:
+          DATABASE_URL: sqlite:///./ci-pytest.db
+          ALLOW_DEV_AUTH: "1"
+        run: pytest
+
   frontend:
     name: Frontend Lint and Typecheck
     runs-on: ubuntu-latest

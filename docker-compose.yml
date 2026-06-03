@@ -1,6 +1,23 @@
 version: '3.8'
 
 services:
+  postgres:
+    image: postgres:16-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: antigravity
+      POSTGRES_PASSWORD: antigravity
+      POSTGRES_DB: antigravity
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U antigravity"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
   backend:
     build: ./backend
     ports:
@@ -10,8 +27,12 @@ services:
       - backend_db:/app/data
     environment:
       - GOOGLE_API_KEY=${GOOGLE_API_KEY}
+      - DATABASE_URL=postgresql+psycopg2://antigravity:antigravity@postgres:5432/antigravity
     env_file:
       - ./backend/.env
+    depends_on:
+      postgres:
+        condition: service_healthy
 
   frontend:
     build: ./frontend
@@ -24,3 +45,4 @@ services:
 
 volumes:
   backend_db:
+  postgres_data:

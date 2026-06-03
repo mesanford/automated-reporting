@@ -3,6 +3,8 @@
 import React, { useState, useEffect } from 'react';
 import { CalendarRange, Plus, RefreshCcw, CheckCircle2, Zap } from 'lucide-react';
 import { SyncMonitor } from './SyncMonitor';
+import { getActiveWorkspaceId } from '@/lib/workspace';
+import { apiJson } from '@/lib/api';
 const API_BASE = process.env.NEXT_PUBLIC_API_BASE_URL ?? 'http://localhost:8000';
 
 const MAX_SYNC_WINDOW_DAYS = 90;
@@ -290,10 +292,29 @@ export const ConnectionsManager: React.FC<ConnectionsManagerProps> = ({
     }
   };
 
-  const startOAuthConnection = (platform: string, connectionId?: number) => {
-    const reconnectParam = typeof connectionId === 'number' ? `?connection_id=${connectionId}` : '';
-    const target = `${API_BASE}/api/auth/${platform}/login${reconnectParam}`;
-    window.location.href = target;
+  const startOAuthConnection = async (platform: string, connectionId?: number) => {
+    // POST to /oauth/start with our Bearer token so the server can sign
+    // the user's identity into the OAuth state. The callback verifies the
+    // signed state instead of relying on a header — there's no way to
+    // attach a Bearer to a top-level navigation, which is what Google
+    // sends the browser back as.
+    try {
+      const { redirect_url } = await apiJson<{ redirect_url: string }>(
+        '/api/auth/oauth/start',
+        {
+          method: 'POST',
+          body: JSON.stringify({
+            platform,
+            workspace_id: getActiveWorkspaceId(),
+            connection_id: typeof connectionId === 'number' ? connectionId : undefined,
+          }),
+        },
+      );
+      window.location.href = redirect_url;
+    } catch (err) {
+      console.error('Failed to start OAuth flow:', err);
+      alert(err instanceof Error ? err.message : 'Failed to start OAuth flow.');
+    }
   };
 
   const removeConnection = async (connection: Connection) => {
@@ -317,19 +338,40 @@ export const ConnectionsManager: React.FC<ConnectionsManagerProps> = ({
   const syncNow = async (id: number, payload: { start_date: string; end_date: string; comparison_start_date: string; comparison_end_date: string }) => {
     setIsSyncing(true);
     setSyncingConnectionId(id);
-    setUploadStep('Connecting to API...');
+    setUploadStep('Queueing sync...');
     try {
-      const response = await fetch(`${API_BASE}/api/sync/${id}`, {
+      // 1. Enqueue. Returns immediately with a sync_job_id.
+      const enqueueRes = await fetch(`${API_BASE}/api/sync/${id}/enqueue`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(payload),
       });
-      const result = await parseApiResponse(response) as { status?: string; message?: string } & Record<string, unknown>;
-      if (result.status === 'success') {
-        onSyncComplete(result);
-      } else {
-        alert(result.message || 'Sync failed');
+      const enqueued = await parseApiResponse(enqueueRes) as {
+        status?: string;
+        message?: string;
+        sync_job_id?: number;
+      };
+      if (enqueued.status !== 'enqueued' || typeof enqueued.sync_job_id !== 'number') {
+        alert(enqueued.message || 'Failed to enqueue sync');
+        return;
       }
+
+      // 2. Poll the SyncJob until terminal status. The SyncMonitor
+      //    component shows progress live; we only need the completion
+      //    signal here.
+      setUploadStep('Syncing in background...');
+      const reportId = await pollSyncJob(enqueued.sync_job_id);
+
+      if (reportId == null) {
+        // pollSyncJob has already surfaced the error.
+        return;
+      }
+
+      // 3. Fetch the report so the dashboard can render it.
+      setUploadStep('Loading report...');
+      const reportRes = await fetch(`${API_BASE}/api/reports/${reportId}`);
+      const report = await parseApiResponse(reportRes) as Record<string, unknown>;
+      onSyncComplete({ status: 'success', ...report });
     } catch (error) {
       console.error('Sync error:', error);
       alert('Sync failed. Is the backend running?');
@@ -340,6 +382,45 @@ export const ConnectionsManager: React.FC<ConnectionsManagerProps> = ({
     }
   };
 
+  /**
+   * Poll a SyncJob until it reaches `completed` or `failed`. Returns the
+   * report_id on success, null on failure (and alerts the user).
+   *
+   * Cap total wait at ~10 min so a wedged background task surfaces an
+   * error instead of looping forever.
+   */
+  const pollSyncJob = async (jobId: number): Promise<number | null> => {
+    const POLL_INTERVAL_MS = 1500;
+    const MAX_ATTEMPTS = 400; // 10 minutes at 1.5s
+    for (let attempt = 0; attempt < MAX_ATTEMPTS; attempt++) {
+      await new Promise((r) => setTimeout(r, POLL_INTERVAL_MS));
+      try {
+        const res = await fetch(`${API_BASE}/api/sync-jobs/${jobId}`);
+        if (!res.ok) continue;
+        const job = await res.json() as {
+          status: string;
+          report_id: number | null;
+          error_message: string | null;
+        };
+        if (job.status === 'completed') {
+          if (job.report_id == null) {
+            alert('Sync completed but produced no report.');
+            return null;
+          }
+          return job.report_id;
+        }
+        if (job.status === 'failed') {
+          alert(job.error_message || 'Sync failed');
+          return null;
+        }
+      } catch {
+        // Transient poll error — keep trying.
+      }
+    }
+    alert('Sync is taking longer than expected. Check sync history later.');
+    return null;
+  };
+
   const syncAll = async (payload: { start_date: string; end_date: string; comparison_start_date: string; comparison_end_date: string }) => {
     if (connections.length === 0) {
       alert('No connected accounts to sync.');
@@ -348,28 +429,39 @@ export const ConnectionsManager: React.FC<ConnectionsManagerProps> = ({
 
     setIsSyncing(true);
     setSyncingConnectionId(-1); // Special ID for "sync all"
-    setUploadStep('Syncing all connected accounts...');
+    setUploadStep('Queueing sync-all...');
     try {
-      const response = await fetch(`${API_BASE}/api/sync-all`, {
+      // 1. Enqueue. Returns immediately with a sync_job_id (connection_id=NULL).
+      const enqueueRes = await fetch(`${API_BASE}/api/sync-all/enqueue`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(payload),
       });
-      const result = await parseApiResponse(response) as {
+      const enqueued = await parseApiResponse(enqueueRes) as {
         status?: string;
         message?: string;
-        syncedConnections?: number;
-        totalActiveConnections?: number;
-      } & Record<string, unknown>;
-      if (result.status === 'success') {
-        onSyncComplete(result);
-        const synced = Number(result.syncedConnections ?? 0);
-        const total = Number(result.totalActiveConnections ?? connections.filter((c) => c.is_active === 1).length);
-        setSyncAllToast(`Synced ${synced} of ${total} active account${total === 1 ? '' : 's'}.`);
-        window.setTimeout(() => setSyncAllToast(null), 3000);
-      } else {
-        alert(result.message || 'Sync all failed');
+        sync_job_id?: number;
+      };
+      if (enqueued.status !== 'enqueued' || typeof enqueued.sync_job_id !== 'number') {
+        alert(enqueued.message || 'Failed to enqueue sync-all');
+        return;
       }
+
+      // 2. Poll the same SyncJob endpoint we use for single-connection sync.
+      setUploadStep('Syncing all connections in background...');
+      const reportId = await pollSyncJob(enqueued.sync_job_id);
+      if (reportId == null) return;
+
+      // 3. Fetch the combined report and feed the dashboard.
+      setUploadStep('Loading report...');
+      const reportRes = await fetch(`${API_BASE}/api/reports/${reportId}`);
+      const report = await parseApiResponse(reportRes) as Record<string, unknown>;
+      onSyncComplete({ status: 'success', ...report });
+
+      const totalActive = Number(report.totalActiveConnections ?? connections.filter((c) => c.is_active === 1).length);
+      const synced = Number(report.syncedConnections ?? totalActive);
+      setSyncAllToast(`Synced ${synced} of ${totalActive} active account${totalActive === 1 ? '' : 's'}.`);
+      window.setTimeout(() => setSyncAllToast(null), 3000);
     } catch (error) {
       console.error('Sync all error:', error);
       alert('Sync all failed. Is the backend running?');

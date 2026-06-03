@@ -104,9 +104,11 @@ def _filter_accounts(accounts: List[Dict[str, Any]], query: str) -> List[Dict[st
 
 
 def _required_env(name: str) -> str:
-    value = os.getenv(name, "").strip()
+    from app.services.secrets_manager import get_secret
+
+    value = (get_secret(name) or "").strip()
     if not value:
-        raise ConnectorConfigError(f"Missing required environment variable: {name}")
+        raise ConnectorConfigError(f"Missing required configuration: {name}")
     return value
 
 
@@ -126,7 +128,9 @@ def _build_microsoft_oauth(
         access_token=access_token,
         refresh_token=(refresh_token or "") or None,
     )
-    client_secret = os.getenv("MICROSOFT_CLIENT_SECRET", "").strip()
+    from app.services.secrets_manager import get_secret
+
+    client_secret = get_secret("MICROSOFT_CLIENT_SECRET").strip()
     redirect_uri = os.getenv("OAUTH_REDIRECT_URI", "http://localhost:8000/api/auth/callback").strip()
     if not redirect_uri:
         raise ConnectorConfigError("Missing OAUTH_REDIRECT_URI for Microsoft OAuth.")
@@ -321,7 +325,9 @@ def _linkedin_invalid_query_params_error(response: httpx.Response) -> bool:
 
 
 def _meta_appsecret_proof(access_token: str) -> str:
-    app_secret = os.getenv("META_CLIENT_SECRET", "").strip() or os.getenv("FACEBOOK_APP_SECRET", "").strip()
+    from app.services.secrets_manager import get_secret
+
+    app_secret = (get_secret("META_CLIENT_SECRET") or get_secret("FACEBOOK_APP_SECRET")).strip()
     if not app_secret:
         raise ConnectorConfigError("Missing Meta app secret (META_CLIENT_SECRET) required for appsecret_proof.")
     return hmac.new(
@@ -1074,12 +1080,13 @@ async def _fetch_google_performance(
             SELECT
               segments.date,
               campaign.name,
+              ad_group.name,
               metrics.cost_micros,
               metrics.impressions,
               metrics.clicks,
               metrics.conversions,
               metrics.conversions_value
-            FROM campaign
+            FROM ad_group
             WHERE segments.date BETWEEN '{start}' AND '{end}'
                 """.format(start=window_start.isoformat(), end=window_end.isoformat())
         records: List[Dict[str, Any]] = []
@@ -1088,7 +1095,7 @@ async def _fetch_google_performance(
                 records.append({
                     "date": str(row.segments.date),
                     "campaign": row.campaign.name or "Unknown Campaign",
-                    "ad_group": "N/A",
+                    "ad_group": row.ad_group.name or "Unknown Ad Group",
                     "ad_asset": "N/A",
                     "spend": float(row.metrics.cost_micros or 0) / 1_000_000,
                     "impressions": int(row.metrics.impressions or 0),

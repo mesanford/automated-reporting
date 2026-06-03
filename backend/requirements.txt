@@ -10,3 +10,9 @@ cryptography
 httpx
 google-ads
 bingads
+firebase-admin
+alembic
+google-cloud-secret-manager
+google-cloud-kms
+pytest
+pytest-asyncio

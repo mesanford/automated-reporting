@@ -107,7 +107,18 @@ interface KpiCardProps {
   delta?: Delta;
   deltaLabel?: string;
 }
+export interface KpiCustomEntry {
+  id: number;
+  name: string;
+  formula: string;
+  format: 'currency' | 'percent' | 'ratio' | 'number' | 'integer';
+  value: number;
+  error: string | null;
+}
+
 interface DashboardProps {
+  customKpis?: KpiCustomEntry[];
+  baseCurrency?: string;
   data: {
     chartData: ChartDataPoint[];
     scorecards: {
@@ -142,6 +153,40 @@ const DeltaBadge = ({ delta, label }: { delta?: Delta; label?: string }) => {
     </span>
   );
 };
+
+function CustomKpiCard({ kpi, currency }: { kpi: KpiCustomEntry; currency: string }) {
+  const formatted = (() => {
+    if (kpi.error) return '—';
+    const v = kpi.value;
+    switch (kpi.format) {
+      case 'currency': return `${currency} ${v.toLocaleString(undefined, { maximumFractionDigits: 2 })}`;
+      case 'percent':  return `${(v).toLocaleString(undefined, { maximumFractionDigits: 1 })}%`;
+      case 'ratio':    return `${v.toFixed(2)}x`;
+      case 'integer':  return Math.round(v).toLocaleString();
+      default:         return v.toLocaleString(undefined, { maximumFractionDigits: 2 });
+    }
+  })();
+
+  return (
+    <div
+      className={`bg-white rounded-2xl p-4 border ${kpi.error ? 'border-red-100' : 'border-slate-100'} shadow-sm`}
+      title={kpi.formula}
+    >
+      <div className="text-[10px] font-black text-slate-400 uppercase tracking-widest mb-1 truncate">
+        {kpi.name}
+      </div>
+      <div className={`text-xl font-black ${kpi.error ? 'text-red-500' : 'text-slate-900'}`}>
+        {formatted}
+      </div>
+      {kpi.error && (
+        <div className="text-[10px] text-red-500 mt-1 truncate">{kpi.error}</div>
+      )}
+      {!kpi.error && (
+        <div className="text-[10px] text-slate-400 mt-1 truncate font-mono">{kpi.formula}</div>
+      )}
+    </div>
+  );
+}
 
 const KpiCard = ({ title, value, icon: Icon, prefix = "", suffix = "", delta, deltaLabel }: KpiCardProps) => (
   <div className="bg-background p-5 rounded-3xl border border-slate-100 shadow-sm hover:shadow-md transition-shadow">
@@ -229,7 +274,7 @@ const PlatformCard = ({ plat, deltas, deltaLabel }: { plat: PlatformSummaryRow; 
   );
 };
 
-export const Dashboard: React.FC<DashboardProps> = ({ data }) => {
+export const Dashboard: React.FC<DashboardProps> = ({ data, customKpis = [], baseCurrency = 'USD' }) => {
   const {
     chartData, scorecards, scorecardDeltas = {},
     platformDeltas = {}, comparisonType = 'none',
@@ -547,6 +592,19 @@ export const Dashboard: React.FC<DashboardProps> = ({ data }) => {
           <KpiCard title="Blended CVR"   value={scorecards.blendedCVR}       icon={Activity}      suffix="%" />
           <KpiCard title="Blended CPC"   value={scorecards.blendedCPC}       icon={BarChart3}     prefix="$" />
         </div>
+
+        {customKpis.length > 0 && (
+          <div className="mt-4">
+            <div className="text-xs font-black text-slate-500 uppercase tracking-wider mb-2">
+              Custom KPIs
+            </div>
+            <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-5 gap-3">
+              {customKpis.map((k) => (
+                <CustomKpiCard key={k.id} kpi={k} currency={baseCurrency} />
+              ))}
+            </div>
+          </div>
+        )}
 
         {/* ── Per-Platform Performance ─────────────────────────────────────── */}
         {platformSummary.length > 0 && (

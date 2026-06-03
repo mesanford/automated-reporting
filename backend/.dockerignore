@@ -1,0 +1,25 @@
+.venv/
+venv/
+__pycache__/
+*.pyc
+*.pyo
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# Local data files — should NOT ship in the image
+*.db
+*.db-journal
+.local_encryption_key
+.env
+.env.*
+!.env.example
+
+# Editor / OS
+.idea/
+.vscode/
+.DS_Store
+
+# Migrations are checked-in; their __pycache__ is not
+migrations/__pycache__/
+migrations/versions/__pycache__/

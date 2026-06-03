@@ -1,4 +1,4 @@
-from fastapi import APIRouter, UploadFile, File, Depends, Body
+from fastapi import APIRouter, UploadFile, File, Depends, Body, HTTPException
 from fastapi.responses import PlainTextResponse
 from typing import Any, Dict, List
 import os
@@ -8,7 +8,12 @@ from pydantic import BaseModel
 from app.services import etl, gemini
 from app.database import get_db
 from app import models
-from app.api.auth import get_current_user
+from app.api.auth import (
+    get_current_user,
+    get_current_workspace_id,
+    record_audit,
+    require_role,
+)
 from app.services.security import decrypt_token
 
 router = APIRouter()
@@ -289,6 +294,7 @@ async def upload_files(
     analysis = gemini.generate_analysis(aggregated["geminiInput"])
 
     new_report = models.Report(
+        workspace_id=workspace_id,
         user_id=user_id,
         chart_data=aggregated["chartData"],
         scorecards=aggregated["scorecards"],
@@ -327,13 +333,21 @@ async def upload_files(
     }
 
 @router.get("/reports")
-async def get_reports(db: Session = Depends(get_db), user_id: str = Depends(get_current_user)):
-    reports = db.query(models.Report).filter(models.Report.user_id == user_id).order_by(models.Report.created_at.desc()).all()
+async def get_reports(
+    db: Session = Depends(get_db),
+    user_id: str = Depends(get_current_user),
+    workspace_id: int = Depends(get_current_workspace_id),
+):
+    reports = db.query(models.Report).filter(models.Report.workspace_id == workspace_id).order_by(models.Report.created_at.desc()).all()
     return reports
 
 @router.get("/connections")
-async def get_connections(db: Session = Depends(get_db), user_id: str = Depends(get_current_user)):
-    connections = db.query(models.Connection).filter(models.Connection.user_id == user_id).all()
+async def get_connections(
+    db: Session = Depends(get_db),
+    user_id: str = Depends(get_current_user),
+    workspace_id: int = Depends(get_current_workspace_id),
+):
+    connections = db.query(models.Connection).filter(models.Connection.workspace_id == workspace_id).all()
     return [
         {
             "id": c.id,
@@ -366,15 +380,26 @@ async def delete_connection(
     connection_id: int,
     db: Session = Depends(get_db),
     user_id: str = Depends(get_current_user),
+    workspace_id: int = Depends(get_current_workspace_id),
+    _role: str = Depends(require_role(["owner", "admin"])),
 ):
     connection = db.query(models.Connection).filter(
         models.Connection.id == connection_id,
-        models.Connection.user_id == user_id,
+        models.Connection.workspace_id == workspace_id,
     ).first()
 
     if not connection:
         return {"status": "error", "message": "Connection not found"}
 
+    record_audit(
+        db,
+        workspace_id=workspace_id,
+        actor_subject=user_id,
+        action="connection.delete",
+        target_type="connection",
+        target_id=connection.id,
+        payload={"platform": connection.platform, "account_id": connection.account_id},
+    )
     db.delete(connection)
     db.commit()
     return {"status": "success", "message": "Connection removed"}
@@ -384,10 +409,11 @@ async def delete_connection(
 async def connection_diagnostics(
     db: Session = Depends(get_db),
     user_id: str = Depends(get_current_user),
+    workspace_id: int = Depends(get_current_workspace_id),
 ):
     from app.services import connectors
 
-    connections = db.query(models.Connection).filter(models.Connection.user_id == user_id).all()
+    connections = db.query(models.Connection).filter(models.Connection.workspace_id == workspace_id).all()
     if not connections:
         return {
             "status": "success",
@@ -481,12 +507,13 @@ async def discover_connection_accounts(
     query: str = "",
     db: Session = Depends(get_db),
     user_id: str = Depends(get_current_user),
+    workspace_id: int = Depends(get_current_workspace_id),
 ):
     from app.services import connectors
 
     connection = db.query(models.Connection).filter(
         models.Connection.id == connection_id,
-        models.Connection.user_id == user_id,
+        models.Connection.workspace_id == workspace_id,
     ).first()
 
     if not connection:
@@ -541,10 +568,11 @@ async def select_connection_accounts(
     payload: AccountSelectionPayload = Body(...),
     db: Session = Depends(get_db),
     user_id: str = Depends(get_current_user),
+    workspace_id: int = Depends(get_current_workspace_id),
 ):
     connection = db.query(models.Connection).filter(
         models.Connection.id == connection_id,
-        models.Connection.user_id == user_id,
+        models.Connection.workspace_id == workspace_id,
     ).first()
 
     if not connection:
@@ -570,335 +598,139 @@ async def select_connection_accounts(
     }
 
 @router.post("/sync/{connection_id}")
-async def sync_connection(
-    connection_id: int, 
+async def sync_connection_gone(connection_id: int):
+    """Removed. The synchronous flow held a uvicorn worker for the whole
+    sync — minutes — and blocked concurrent syncs across workspaces. Use
+    `POST /api/sync/{id}/enqueue` and poll `GET /api/sync-jobs/{job_id}`
+    until status is `completed`, then `GET /api/reports/{report_id}`."""
+    raise HTTPException(
+        status_code=410,
+        detail={
+            "message": (
+                "POST /api/sync/{id} is retired. "
+                "Use POST /api/sync/{id}/enqueue + poll GET /api/sync-jobs/{job_id}."
+            ),
+            "replacement": f"/api/sync/{connection_id}/enqueue",
+        },
+    )
+
+
+@router.post("/sync/{connection_id}/enqueue")
+async def enqueue_sync(
+    connection_id: int,
     payload: SyncRequestPayload | None = Body(default=None),
     db: Session = Depends(get_db),
-    user_id: str = Depends(get_current_user)
+    user_id: str = Depends(get_current_user),
+    workspace_id: int = Depends(get_current_workspace_id),
 ):
-    from app.services import connectors
-    
-    connection = db.query(models.Connection).filter(
-        models.Connection.id == connection_id,
-        models.Connection.user_id == user_id
-    ).first()
-    
+    """Async sync: creates a SyncJob, enqueues the actual work, returns the
+    job id. Clients poll `GET /api/sync-jobs/{job_id}` for progress and
+    pick up the resulting report once status is `completed`."""
+    from app.services.task_queue import enqueue
+
+    connection = (
+        db.query(models.Connection)
+        .filter(
+            models.Connection.id == connection_id,
+            models.Connection.workspace_id == workspace_id,
+        )
+        .first()
+    )
     if not connection:
         return {"status": "error", "message": "Connection not found"}
 
-    sync_start_date = payload.start_date if payload else None
-    sync_end_date = payload.end_date if payload else None
-    comparison_start_date = payload.comparison_start_date if payload else None
-    comparison_end_date = payload.comparison_end_date if payload else None
-    comparison_requested = bool(comparison_start_date and comparison_end_date)
-        
-    selected_account_ids = connection.selected_account_ids or []
-    accounts_to_sync = selected_account_ids if selected_account_ids else [connection.account_id]
-    microsoft_customer_map: Dict[str, str] = {
-        str(a.get("id")): str(a.get("customer_id", ""))
-        for a in (connection.available_accounts or [])
-    }
-
-    dataframes = []
-    comparison_dataframes = []
-    access_token, access_err = _try_decrypt_token(connection.access_token or "")
-    refresh_token, refresh_err = _try_decrypt_token(connection.refresh_token or "")
-    decrypt_error = access_err or refresh_err
-    if decrypt_error:
-        return {
-            "status": "error",
-            "message": f"Sync failed for {connection.platform}: {decrypt_error}",
-        }
-
-    if connection.platform == "microsoft" and accounts_to_sync:
-        microsoft_customer_map = await _hydrate_microsoft_customer_map(
-            connection=connection,
-            accounts_to_check=[str(a) for a in accounts_to_sync],
-            access_token=access_token,
-            refresh_token=refresh_token,
-            db=db,
-        )
-        missing_customer_ids = [str(a) for a in accounts_to_sync if not microsoft_customer_map.get(str(a), "").strip()]
-        if missing_customer_ids:
-            return {
-                "status": "error",
-                "message": (
-                    "Sync failed for microsoft "
-                    f"(connection {connection_id}): missing customer_id for selected account(s) "
-                    + ", ".join(missing_customer_ids)
-                    + ". Re-discover Microsoft accounts and re-save the selection, or set MICROSOFT_CUSTOMER_ID for a single customer context."
-                ),
-            }
-
-    try:
-        for account_id in accounts_to_sync:
-            df = await connectors.fetch_platform_data(
-                connection.platform,
-                account_id,
-                access_token=access_token,
-                refresh_token=refresh_token,
-                microsoft_customer_id=microsoft_customer_map.get(str(account_id), ""),
-                start_date=sync_start_date,
-                end_date=sync_end_date,
-            )
-            if not df.empty:
-                dataframes.append(df)
-
-            if comparison_start_date and comparison_end_date:
-                comparison_df = await connectors.fetch_platform_data(
-                    connection.platform,
-                    account_id,
-                    access_token=access_token,
-                    refresh_token=refresh_token,
-                    microsoft_customer_id=microsoft_customer_map.get(str(account_id), ""),
-                    start_date=comparison_start_date,
-                    end_date=comparison_end_date,
-                )
-                if not comparison_df.empty:
-                    comparison_dataframes.append(comparison_df)
-    except Exception as exc:
-        error_msg = str(exc)
-        return {
-            "status": "error",
-            "message": f"Sync failed for {connection.platform} (connection {connection_id}): {error_msg}",
-        }
-
-    if not dataframes:
-        return {"status": "error", "message": "No ad account data returned for this connection."}
-
-    aggregated = etl.aggregate_data(
-        dataframes,
-        comparison_dataframes=comparison_dataframes if comparison_requested else None,
-        sync_start_date=sync_start_date,
-        sync_end_date=sync_end_date,
-        comparison_start_date=comparison_start_date,
-        comparison_end_date=comparison_end_date,
-    )
-    analysis = gemini.generate_analysis(aggregated["geminiInput"])
-
-    new_report = models.Report(
+    job = models.SyncJob(
+        workspace_id=workspace_id,
         user_id=user_id,
-        chart_data=aggregated["chartData"],
-        scorecards=aggregated["scorecards"],
-        scorecard_deltas=aggregated["scorecardDeltas"],
-        platform_deltas=aggregated["platformDeltas"],
-        comparison_type=aggregated["comparisonType"],
-        current_period_label=aggregated["currentPeriodLabel"],
-        prior_period_label=aggregated["priorPeriodLabel"],
-        campaign_summary=aggregated["campaignSummary"],
-        hierarchy_summary=aggregated["hierarchySummary"],
-        platform_summary=aggregated["platformSummary"],
-        top_performer=aggregated["topPerformer"],
-        bottom_performer=aggregated["bottomPerformer"],
-        gemini_analysis=analysis
+        connection_id=connection_id,
+        status="pending",
+        progress_percent=0,
+        current_step="queued",
     )
-    db.add(new_report)
+    db.add(job)
     db.commit()
-    db.refresh(new_report)
+    db.refresh(job)
 
+    task_id = await enqueue(
+        "sync_connection",
+        {
+            "sync_job_id": job.id,
+            "sync_start_date": payload.start_date if payload else None,
+            "sync_end_date": payload.end_date if payload else None,
+            "comparison_start_date": payload.comparison_start_date if payload else None,
+            "comparison_end_date": payload.comparison_end_date if payload else None,
+        },
+    )
     return {
-        "status":             "success",
-        "id":                 new_report.id,
-        "syncedAdAccounts":   len(dataframes),
-        "syncWindow": {
-            "startDate": sync_start_date,
-            "endDate": sync_end_date,
-        },
-        "comparisonWindow": {
-            "startDate": comparison_start_date,
-            "endDate": comparison_end_date,
-        },
-        "chartData":          aggregated["chartData"],
-        "scorecards":         aggregated["scorecards"],
-        "scorecardDeltas":    aggregated["scorecardDeltas"],
-        "platformDeltas":     aggregated["platformDeltas"],
-        "comparisonType":     aggregated["comparisonType"],
-        "currentPeriodLabel": aggregated["currentPeriodLabel"],
-        "priorPeriodLabel":   aggregated["priorPeriodLabel"],
-        "campaignSummary":    aggregated["campaignSummary"],
-        "hierarchySummary":   aggregated["hierarchySummary"],
-        "platformSummary":    aggregated["platformSummary"],
-        "topPerformer":       aggregated["topPerformer"],
-        "bottomPerformer":    aggregated["bottomPerformer"],
-        "geminiAnalysis":     analysis
+        "status": "enqueued",
+        "sync_job_id": job.id,
+        "task_id": task_id,
     }
-@router.post("/sync/all")
 @router.post("/sync-all")
-async def sync_all_connections(
+async def sync_all_connections_gone():
+    """Removed. See `POST /api/sync-all/enqueue` + polling."""
+    raise HTTPException(
+        status_code=410,
+        detail={
+            "message": (
+                "POST /api/sync-all is retired. "
+                "Use POST /api/sync-all/enqueue + poll GET /api/sync-jobs/{job_id}."
+            ),
+            "replacement": "/api/sync-all/enqueue",
+        },
+    )
+
+
+@router.post("/sync-all/enqueue")
+async def enqueue_sync_all(
     payload: SyncRequestPayload | None = Body(default=None),
     db: Session = Depends(get_db),
-    user_id: str = Depends(get_current_user)
+    user_id: str = Depends(get_current_user),
+    workspace_id: int = Depends(get_current_workspace_id),
 ):
-    from app.services import connectors
-    
-    connections = db.query(models.Connection).filter(
-        models.Connection.user_id == user_id,
-        models.Connection.is_active == 1
-    ).all()
-    
-    if not connections:
+    """Async multi-connection sync: creates a SyncJob with `connection_id=NULL`
+    (signaling "all"), enqueues the work, returns immediately. Polled via
+    the existing `GET /api/sync-jobs/{id}`."""
+    from app.services.task_queue import enqueue
+
+    active_count = (
+        db.query(models.Connection)
+        .filter(
+            models.Connection.workspace_id == workspace_id,
+            models.Connection.is_active == 1,
+        )
+        .count()
+    )
+    if active_count == 0:
         return {"status": "error", "message": "No active connections found."}
 
-    sync_start_date = payload.start_date if payload else None
-    sync_end_date = payload.end_date if payload else None
-    comparison_start_date = payload.comparison_start_date if payload else None
-    comparison_end_date = payload.comparison_end_date if payload else None
-    comparison_requested = bool(comparison_start_date and comparison_end_date)
-        
-    dataframes = []
-    comparison_dataframes = []
-    synced_connections = 0
-    synced_ad_accounts = 0
-    skipped_connections: List[Dict[str, Any]] = []
-    synced_account_signatures = set()
-    
-    for conn in connections:
-        selected_account_ids = conn.selected_account_ids or []
-        accounts_to_sync = selected_account_ids if selected_account_ids else [conn.account_id]
-        microsoft_customer_map: Dict[str, str] = {
-            str(a.get("id")): str(a.get("customer_id", ""))
-            for a in (conn.available_accounts or [])
-        }
-        access_token, access_err = _try_decrypt_token(conn.access_token or "")
-        refresh_token, refresh_err = _try_decrypt_token(conn.refresh_token or "")
-        decrypt_error = access_err or refresh_err
-        if decrypt_error:
-            return {
-                "status": "error",
-                "message": f"Sync failed for {conn.platform} (connection {conn.id}): {decrypt_error}",
-            }
-
-        if conn.platform == "microsoft" and accounts_to_sync:
-            microsoft_customer_map = await _hydrate_microsoft_customer_map(
-                connection=conn,
-                accounts_to_check=[str(a) for a in accounts_to_sync],
-                access_token=access_token,
-                refresh_token=refresh_token,
-                db=db,
-            )
-            missing_customer_ids = [str(a) for a in accounts_to_sync if not microsoft_customer_map.get(str(a), "").strip()]
-            if missing_customer_ids:
-                return {
-                    "status": "error",
-                    "message": (
-                        "Sync failed for microsoft "
-                        f"(connection {conn.id}): missing customer_id for selected account(s) "
-                        + ", ".join(missing_customer_ids)
-                        + ". Re-discover Microsoft accounts and re-save the selection, or set MICROSOFT_CUSTOMER_ID for a single customer context."
-                    ),
-                }
-
-        connection_had_data = False
-        try:
-            for account_id in accounts_to_sync:
-                signature = (conn.platform.lower(), str(account_id))
-                if signature in synced_account_signatures:
-                    continue
-                synced_account_signatures.add(signature)
-                
-                df = await connectors.fetch_platform_data(
-                    conn.platform,
-                    account_id,
-                    access_token=access_token,
-                    refresh_token=refresh_token,
-                    microsoft_customer_id=microsoft_customer_map.get(str(account_id), ""),
-                    start_date=sync_start_date,
-                    end_date=sync_end_date,
-                )
-                if not df.empty:
-                    dataframes.append(df)
-                    synced_ad_accounts += 1
-                    connection_had_data = True
-
-                if comparison_start_date and comparison_end_date:
-                    comparison_df = await connectors.fetch_platform_data(
-                        conn.platform,
-                        account_id,
-                        access_token=access_token,
-                        refresh_token=refresh_token,
-                        microsoft_customer_id=microsoft_customer_map.get(str(account_id), ""),
-                        start_date=comparison_start_date,
-                        end_date=comparison_end_date,
-                    )
-                    if not comparison_df.empty:
-                        comparison_dataframes.append(comparison_df)
-        except Exception as exc:
-            return {
-                "status": "error",
-                "message": f"Sync failed for {conn.platform} (connection {conn.id}): {str(exc)}",
-            }
-
-        if not connection_had_data:
-            skipped_connections.append({
-                "connectionId": conn.id,
-                "platform": conn.platform,
-                "reason": "No data returned for the selected date window/accounts.",
-            })
-            continue
-
-        synced_connections += 1
-            
-    if not dataframes:
-        return {"status": "error", "message": "Could not fetch data from any connection."}
-        
-    aggregated = etl.aggregate_data(
-        dataframes,
-        comparison_dataframes=comparison_dataframes if comparison_requested else None,
-        sync_start_date=sync_start_date,
-        sync_end_date=sync_end_date,
-        comparison_start_date=comparison_start_date,
-        comparison_end_date=comparison_end_date,
-    )
-    analysis = gemini.generate_analysis(aggregated["geminiInput"])
-
-    new_report = models.Report(
+    job = models.SyncJob(
+        workspace_id=workspace_id,
         user_id=user_id,
-        chart_data=aggregated["chartData"],
-        scorecards=aggregated["scorecards"],
-        scorecard_deltas=aggregated["scorecardDeltas"],
-        platform_deltas=aggregated["platformDeltas"],
-        comparison_type=aggregated["comparisonType"],
-        current_period_label=aggregated["currentPeriodLabel"],
-        prior_period_label=aggregated["priorPeriodLabel"],
-        campaign_summary=aggregated["campaignSummary"],
-        hierarchy_summary=aggregated["hierarchySummary"],
-        platform_summary=aggregated["platformSummary"],
-        top_performer=aggregated["topPerformer"],
-        bottom_performer=aggregated["bottomPerformer"],
-        gemini_analysis=analysis
+        connection_id=None,  # signals sync-all
+        status="pending",
+        progress_percent=0,
+        current_step="queued",
+        total_accounts=active_count,
     )
-    db.add(new_report)
+    db.add(job)
     db.commit()
-    db.refresh(new_report)
+    db.refresh(job)
 
+    task_id = await enqueue(
+        "sync_all_connections",
+        {
+            "sync_job_id": job.id,
+            "sync_start_date": payload.start_date if payload else None,
+            "sync_end_date": payload.end_date if payload else None,
+            "comparison_start_date": payload.comparison_start_date if payload else None,
+            "comparison_end_date": payload.comparison_end_date if payload else None,
+        },
+    )
     return {
-        "status":             "success",
-        "id":                 new_report.id,
-        "totalActiveConnections": len(connections),
-        "syncedConnections":  synced_connections,
-        "syncedAdAccounts":   synced_ad_accounts,
-        "skippedConnections": skipped_connections,
-        "syncWindow": {
-            "startDate": sync_start_date,
-            "endDate": sync_end_date,
-        },
-        "comparisonWindow": {
-            "startDate": comparison_start_date,
-            "endDate": comparison_end_date,
-        },
-        "chartData":          aggregated["chartData"],
-        "scorecards":         aggregated["scorecards"],
-        "scorecardDeltas":    aggregated["scorecardDeltas"],
-        "platformDeltas":     aggregated["platformDeltas"],
-        "comparisonType":     aggregated["comparisonType"],
-        "currentPeriodLabel": aggregated["currentPeriodLabel"],
-        "priorPeriodLabel":   aggregated["priorPeriodLabel"],
-        "campaignSummary":    aggregated["campaignSummary"],
-        "hierarchySummary":   aggregated["hierarchySummary"],
-        "platformSummary":    aggregated["platformSummary"],
-        "topPerformer":       aggregated["topPerformer"],
-        "bottomPerformer":    aggregated["bottomPerformer"],
-        "geminiAnalysis":     analysis
+        "status": "enqueued",
+        "sync_job_id": job.id,
+        "task_id": task_id,
     }
 
 
@@ -907,10 +739,11 @@ async def download_report_markdown(
     report_id: int,
     db: Session = Depends(get_db),
     user_id: str = Depends(get_current_user),
+    workspace_id: int = Depends(get_current_workspace_id),
 ):
     report = db.query(models.Report).filter(
         models.Report.id == report_id,
-        models.Report.user_id == user_id,
+        models.Report.workspace_id == workspace_id,
     ).first()
 
     if not report:
@@ -927,11 +760,12 @@ async def get_sync_status(
     connection_id: int,
     db: Session = Depends(get_db),
     user_id: str = Depends(get_current_user),
+    workspace_id: int = Depends(get_current_workspace_id),
 ):
     """Get real-time status of most recent sync job for a connection"""
     job = db.query(models.SyncJob).filter(
         models.SyncJob.connection_id == connection_id,
-        models.SyncJob.user_id == user_id,
+        models.SyncJob.workspace_id == workspace_id,
     ).order_by(models.SyncJob.created_at.desc()).first()
 
     if not job:
@@ -957,15 +791,144 @@ async def get_sync_status(
     }
 
 
+@router.get("/sync-jobs/{job_id}")
+async def get_sync_job(
+    job_id: int,
+    db: Session = Depends(get_db),
+    user_id: str = Depends(get_current_user),
+    workspace_id: int = Depends(get_current_workspace_id),
+):
+    """Polling target for the async sync flow. Returns the SyncJob row +
+    its final `report_id` once status is `completed`."""
+    job = db.query(models.SyncJob).filter(
+        models.SyncJob.id == job_id,
+        models.SyncJob.workspace_id == workspace_id,
+    ).first()
+    if not job:
+        raise HTTPException(status_code=404, detail="Sync job not found.")
+    return {
+        "id": job.id,
+        "connection_id": job.connection_id,
+        "status": job.status,
+        "progress_percent": job.progress_percent,
+        "current_step": job.current_step,
+        "accounts_synced": job.accounts_synced,
+        "total_accounts": job.total_accounts,
+        "error_message": job.error_message,
+        "report_id": job.report_id,
+        "created_at": job.created_at.isoformat() if job.created_at else None,
+        "started_at": job.started_at.isoformat() if job.started_at else None,
+        "completed_at": job.completed_at.isoformat() if job.completed_at else None,
+    }
+
+
+def _serialize_report(report: models.Report) -> dict:
+    """Same shape `sync_connection` returns inline — so the async flow can
+    hand the dashboard exactly what it used to await."""
+    return {
+        "id": report.id,
+        "chartData": report.chart_data,
+        "scorecards": report.scorecards,
+        "scorecardDeltas": report.scorecard_deltas,
+        "platformDeltas": report.platform_deltas,
+        "comparisonType": report.comparison_type,
+        "currentPeriodLabel": report.current_period_label,
+        "priorPeriodLabel": report.prior_period_label,
+        "campaignSummary": report.campaign_summary,
+        "hierarchySummary": report.hierarchy_summary,
+        "platformSummary": report.platform_summary,
+        "topPerformer": report.top_performer,
+        "bottomPerformer": report.bottom_performer,
+        "geminiAnalysis": report.gemini_analysis,
+        "created_at": report.created_at.isoformat() if report.created_at else None,
+    }
+
+
+@router.get("/reports/{report_id}")
+async def get_report(
+    report_id: int,
+    db: Session = Depends(get_db),
+    user_id: str = Depends(get_current_user),
+    workspace_id: int = Depends(get_current_workspace_id),
+):
+    report = db.query(models.Report).filter(
+        models.Report.id == report_id,
+        models.Report.workspace_id == workspace_id,
+    ).first()
+    if not report:
+        raise HTTPException(status_code=404, detail="Report not found.")
+    return _serialize_report(report)
+
+
+@router.get("/reports/{report_id}/csv")
+async def download_report_csv(
+    report_id: int,
+    db: Session = Depends(get_db),
+    user_id: str = Depends(get_current_user),
+    workspace_id: int = Depends(get_current_workspace_id),
+):
+    """CSV export of the report's campaign-level data.
+
+    One row per campaign with the full derived metric set. Returned as
+    a `Content-Disposition: attachment` so the browser downloads it
+    instead of rendering."""
+    import csv
+    import io
+
+    from fastapi.responses import Response
+
+    report = db.query(models.Report).filter(
+        models.Report.id == report_id,
+        models.Report.workspace_id == workspace_id,
+    ).first()
+    if not report:
+        raise HTTPException(status_code=404, detail="Report not found.")
+
+    rows = report.campaign_summary or []
+    buf = io.StringIO()
+    writer = csv.writer(buf)
+    writer.writerow([
+        "platform", "campaign", "spend", "impressions", "clicks", "conversions",
+        "revenue", "cpa", "ctr", "cvr", "cpc", "cpm", "roas", "spend_share",
+    ])
+    for r in rows:
+        writer.writerow([
+            r.get("platform", ""),
+            r.get("campaign", ""),
+            r.get("spend", ""),
+            r.get("impressions", ""),
+            r.get("clicks", ""),
+            r.get("conversions", ""),
+            r.get("revenue", ""),
+            r.get("cpa", ""),
+            r.get("ctr", ""),
+            r.get("cvr", ""),
+            r.get("cpc", ""),
+            r.get("cpm", ""),
+            r.get("roas", ""),
+            r.get("spend_share", ""),
+        ])
+
+    label = (report.current_period_label or f"report-{report.id}").replace(" ", "-").replace("/", "-")
+    return Response(
+        content=buf.getvalue(),
+        media_type="text/csv",
+        headers={
+            "Content-Disposition": f'attachment; filename="report-{report.id}-{label}.csv"',
+        },
+    )
+
+
 @router.get("/sync-jobs")
 async def list_sync_jobs(
     db: Session = Depends(get_db),
     user_id: str = Depends(get_current_user),
     limit: int = 20,
+    workspace_id: int = Depends(get_current_workspace_id),
 ):
     """List recent sync jobs for this user"""
     jobs = db.query(models.SyncJob).filter(
-        models.SyncJob.user_id == user_id,
+        models.SyncJob.workspace_id == workspace_id,
     ).order_by(models.SyncJob.created_at.desc()).limit(limit).all()
 
     return [
