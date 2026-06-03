@@ -81,6 +81,46 @@ Frontend equivalents (set in `frontend/.env.local`):
 The `/readyz` endpoint returns `subsystems` and `warnings` keys so any of
 these can be verified post-deploy without log-diving.
 
+## First-time GCP deploy
+
+There is a one-shot script: [`scripts/deploy_gcp.sh`](scripts/deploy_gcp.sh).
+
+```bash
+# Dry run first — prints every gcloud command without executing.
+PROJECT_ID=your-gcp-project FRONTEND_URL=https://your-frontend.example.com \
+  ./scripts/deploy_gcp.sh --dry-run
+
+# Real run.
+PROJECT_ID=your-gcp-project FRONTEND_URL=https://your-frontend.example.com \
+  ./scripts/deploy_gcp.sh
+```
+
+What the script does (8 phases, re-runnable):
+
+1. Enables the GCP APIs (run, sqladmin, secretmanager, kms, cloudtasks, cloudscheduler, cloudbuild, artifactregistry, iam).
+2. Creates a Cloud SQL Postgres 16 instance, database, and user.
+3. Creates a KMS keyring + symmetric encryption key for the OAuth-token envelope.
+4. Creates two service accounts (runtime + invoker) and binds the runtime SA's roles.
+5. Walks through Secret Manager secrets interactively. Existing secrets are left alone unless you say `rotate`. Generates `ENCRYPTION_KEY` and `DB_PASSWORD` if missing.
+6. Deploys Cloud Run from `./backend` with all env vars + secret mounts. Two-pass: first deploy gets a placeholder URL so the deploy can finish; the captured URL is then patched back into `OAUTH_REDIRECT_URI` + `CLOUD_TASKS_WORKER_URL` so the live service points at itself.
+7. Creates the Cloud Tasks queue and grants the invoker SA `roles/run.invoker` on the service.
+8. Creates / updates two Cloud Scheduler jobs (`*-sync-tick`, `*-digest-tick`) firing every 5 minutes against the internal worker endpoints with OIDC.
+
+Then it `curl`s `/readyz` and prints the subsystem report so you can verify.
+
+**What it does *not* do** (manual steps):
+
+- Deploy the Next.js frontend. App Hosting is interactive enough that `firebase init apphosting` + the console is faster. Set `NEXT_PUBLIC_API_BASE_URL` to the Cloud Run URL the script reports.
+- Configure Firebase Auth providers. Enable Google sign-in in the Firebase console once.
+- Re-encrypt existing OAuth refresh tokens under the new KMS scheme. See the "Rotating the KEK" runbook below; for a fresh deploy with no production tokens yet, no action needed.
+
+Flags worth knowing:
+
+- `--only-deploy` — skips every provisioning phase, just rebuilds and redeploys the Cloud Run service. Use this on every code push after the first run.
+- `--skip-secrets` — skip the interactive secret prompts. Useful in CI.
+- `--skip-sql`, `--skip-kms`, `--skip-iam`, `--skip-tasks`, `--skip-scheduler`, `--skip-verify` — surgical reruns of single phases.
+- `--dry-run` — print all commands, execute none.
+
 ## Runbooks
 
 ### Rotating the OAuth-state signing key
