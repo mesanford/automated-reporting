@@ -1,5 +1,6 @@
-from fastapi import APIRouter, UploadFile, File, Depends, Body, HTTPException
+from fastapi import APIRouter, UploadFile, File, Depends, Body, HTTPException, Request
 from fastapi.responses import PlainTextResponse
+from app.ratelimit import limiter
 from typing import Any, Dict, List
 import os
 import re
@@ -261,7 +262,9 @@ def _build_report_markdown(report: models.Report) -> str:
     return "\n".join(lines)
 
 @router.post("/upload")
+@limiter.limit("10/minute")
 async def upload_files(
+    request: Request,
     files: List[UploadFile] = File(...),
     comparison_files: List[UploadFile] = File(default=[]),
     db: Session = Depends(get_db),
@@ -616,7 +619,9 @@ async def sync_connection_gone(connection_id: int):
 
 
 @router.post("/sync/{connection_id}/enqueue")
+@limiter.limit("20/minute")
 async def enqueue_sync(
+    request: Request,
     connection_id: int,
     payload: SyncRequestPayload | None = Body(default=None),
     db: Session = Depends(get_db),
@@ -682,7 +687,9 @@ async def sync_all_connections_gone():
 
 
 @router.post("/sync-all/enqueue")
+@limiter.limit("5/minute")
 async def enqueue_sync_all(
+    request: Request,
     payload: SyncRequestPayload | None = Body(default=None),
     db: Session = Depends(get_db),
     user_id: str = Depends(get_current_user),

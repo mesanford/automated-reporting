@@ -4,8 +4,9 @@ from __future__ import annotations
 import json
 from typing import Any, Dict, List, Optional
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Request
 from fastapi.responses import StreamingResponse
+from app.ratelimit import limiter
 from pydantic import BaseModel
 from sqlalchemy.orm import Session
 
@@ -164,7 +165,9 @@ def _sse(event: Dict[str, Any]) -> str:
 
 
 @router.post("/conversations/{conversation_id}/messages")
+@limiter.limit("30/minute")
 def send_message(
+    request: Request,
     conversation_id: int,
     body: SendMessageBody,
     user_id: str = Depends(get_current_user),

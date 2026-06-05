@@ -14,5 +14,7 @@ firebase-admin
 alembic
 google-cloud-secret-manager
 google-cloud-kms
+google-cloud-logging
+slowapi
 pytest
 pytest-asyncio

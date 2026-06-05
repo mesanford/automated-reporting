@@ -1,9 +1,20 @@
 import os
 from pathlib import Path
 
-from fastapi import FastAPI
+import logging
+
+from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import JSONResponse
+from slowapi.errors import RateLimitExceeded
+from slowapi import _rate_limit_exceeded_handler
 from sqlalchemy import inspect as sqlalchemy_inspect
+
+from app.observability import configure_observability
+from app.ratelimit import limiter
+
+configure_observability()
+logger = logging.getLogger("antigravity")
 
 from app.api import activity, alerts, budgets, chat, digests, endpoints, internal, kpis, oauth, optimizations, schedules, share, views, workspaces
 from app.services import task_handlers  # noqa: F401  (registers task handlers on import)
@@ -62,6 +73,21 @@ from app.preflight import run_or_raise  # noqa: E402
 _preflight_report = run_or_raise()
 
 app = FastAPI(title="Antigravity API")
+app.state.limiter = limiter
+app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
+
+
+@app.exception_handler(Exception)
+async def _unhandled_exception_handler(request: Request, exc: Exception):
+    # Log with stack so Cloud Error Reporting groups it as a real error.
+    logger.exception(
+        "unhandled-exception",
+        extra={"path": request.url.path, "method": request.method},
+    )
+    return JSONResponse(
+        status_code=500,
+        content={"detail": "internal server error"},
+    )
 
 
 def _cors_origins() -> list[str]:
@@ -83,6 +109,28 @@ app.add_middleware(
     allow_methods=["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
     allow_headers=["Authorization", "Content-Type", "X-User-Id", "X-Workspace-Id"],
 )
+
+
+# Cap request body size. Cloud Run already enforces a 32 MiB request limit
+# on streaming uploads, but we want a tighter, app-level guard with a clean
+# 413 response — and we want it before the route reads anything off the wire.
+MAX_BODY_BYTES = int(os.getenv("MAX_REQUEST_BODY_BYTES", str(25 * 1024 * 1024)))  # 25 MiB
+
+
+@app.middleware("http")
+async def _limit_body_size(request: Request, call_next):
+    if request.method in ("POST", "PUT", "PATCH"):
+        cl = request.headers.get("content-length")
+        if cl is not None:
+            try:
+                if int(cl) > MAX_BODY_BYTES:
+                    return JSONResponse(
+                        status_code=413,
+                        content={"detail": f"request body exceeds {MAX_BODY_BYTES} bytes"},
+                    )
+            except ValueError:
+                pass
+    return await call_next(request)
 
 
 @app.get("/")

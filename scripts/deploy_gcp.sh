@@ -165,6 +165,15 @@ if ! skipped apis; then
     cloudbuild.googleapis.com \
     artifactregistry.googleapis.com \
     iam.googleapis.com \
+    generativelanguage.googleapis.com \
+    firebase.googleapis.com \
+    identitytoolkit.googleapis.com \
+    storage.googleapis.com \
+    servicenetworking.googleapis.com \
+    logging.googleapis.com \
+    monitoring.googleapis.com \
+    clouderrorreporting.googleapis.com \
+    cloudtrace.googleapis.com \
     --project "$PROJECT_ID"
   ok "APIs enabled"
 fi
@@ -187,9 +196,23 @@ if ! skipped sql; then
       --tier="$DB_TIER" \
       --region="$REGION" \
       --root-password="$(openssl rand -base64 32)" \
+      --backup \
+      --backup-start-time=08:00 \
+      --retained-backups-count=30 \
+      --retained-transaction-log-days=7 \
+      --enable-point-in-time-recovery \
       --project "$PROJECT_ID"
   else
     ok "instance $DB_INSTANCE already exists"
+    # Patch backup settings idempotently — safe on existing instances.
+    run gcloud sql instances patch "$DB_INSTANCE" \
+      --backup-start-time=08:00 \
+      --retained-backups-count=30 \
+      --retained-transaction-log-days=7 \
+      --enable-point-in-time-recovery \
+      --project "$PROJECT_ID" \
+      --quiet >/dev/null
+    ok "backup policy applied (30-day retention, 7-day PITR window)"
   fi
 
   run_idempotent gcloud sql databases create "$DB_NAME" \
