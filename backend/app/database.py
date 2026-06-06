@@ -12,6 +12,18 @@ load_dotenv()
 DEFAULT_DB_PATH = Path(__file__).resolve().parent.parent / "antigravity.db"
 SQLALCHEMY_DATABASE_URL = os.getenv("DATABASE_URL", f"sqlite:///{DEFAULT_DB_PATH}")
 
+# Inject DB_PASSWORD into the URL if it's set and the URL doesn't already
+# carry one. Cloud Run mounts secrets as env vars, but SQLAlchemy URLs don't
+# auto-interpolate — so the deploy script ships a passwordless URL plus a
+# DB_PASSWORD secret, and we stitch them together here.
+_db_password = os.getenv("DB_PASSWORD")
+if _db_password and "://" in SQLALCHEMY_DATABASE_URL and "@" in SQLALCHEMY_DATABASE_URL:
+    from urllib.parse import quote
+    scheme, rest = SQLALCHEMY_DATABASE_URL.split("://", 1)
+    userinfo, hostpart = rest.split("@", 1)
+    if ":" not in userinfo:
+        SQLALCHEMY_DATABASE_URL = f"{scheme}://{userinfo}:{quote(_db_password, safe='')}@{hostpart}"
+
 is_sqlite = SQLALCHEMY_DATABASE_URL.startswith("sqlite")
 connect_args = {"check_same_thread": False} if is_sqlite else {}
 

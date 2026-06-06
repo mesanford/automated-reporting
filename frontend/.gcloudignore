@@ -1,0 +1,22 @@
+.git
+.gitignore
+.next/
+node_modules/
+out/
+
+# Build artifacts
+tsconfig.tsbuildinfo
+
+# Editor / OS
+.DS_Store
+.vscode/
+.idea/
+
+# Env files — gitignored, but we DO want them in the build context so
+# NEXT_PUBLIC_* values get inlined into the client bundle. Anything truly
+# secret stays out: NEXT_PUBLIC_* is fine to ship; nothing else lives here.
+!.env.local
+!.env.local.example
+.env
+.env.development
+.env.production

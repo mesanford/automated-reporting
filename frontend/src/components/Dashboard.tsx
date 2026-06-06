@@ -86,6 +86,7 @@ interface HierarchySummaryRow {
   ctr: number;
   cvr: number;
   cpc: number;
+  revenue: number;
   roas: number;
   spend_share: number;
 }
@@ -479,7 +480,8 @@ export const Dashboard: React.FC<DashboardProps> = ({ data, customKpis = [], bas
     ctr: r.ctr,
     cvr: r.cvr,
     cpc: r.cpc,
-    roas: 0,
+    revenue: r.revenue ?? 0,
+    roas: r.roas ?? 0,
     spend_share: r.spend_share,
   }));
 

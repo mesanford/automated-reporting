@@ -83,6 +83,8 @@ interface CampaignSummaryRow {
   cvr: number;
   cpc: number;
   spend_share: number;
+  revenue: number;
+  roas: number;
 }
 
 interface PlatformSummaryRow {
@@ -91,6 +93,8 @@ interface PlatformSummaryRow {
   cpa: number;
   ctr: number;
   conversions: number;
+  revenue: number;
+  roas: number;
 }
 
 interface SavedView {
@@ -131,6 +135,7 @@ interface HierarchySummaryRow {
   ctr: number;
   cvr: number;
   cpc: number;
+  revenue: number;
   roas: number;
   spend_share: number;
 }
@@ -157,7 +162,8 @@ const normalizeHierarchySummary = (
     ctr: r.ctr,
     cvr: r.cvr,
     cpc: r.cpc,
-    roas: 0,
+    revenue: r.revenue ?? 0,
+    roas: r.roas ?? 0,
     spend_share: r.spend_share,
   }));
 

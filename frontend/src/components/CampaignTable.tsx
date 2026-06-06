@@ -15,6 +15,8 @@ interface CampaignRow {
   cvr: number;
   cpc: number;
   spend_share: number;
+  revenue?: number;
+  roas?: number;
 }
 
 type SortKey = keyof CampaignRow;

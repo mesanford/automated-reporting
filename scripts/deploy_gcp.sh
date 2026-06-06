@@ -191,8 +191,11 @@ if ! skipped sql; then
   fi
 
   if ! gcloud sql instances describe "$DB_INSTANCE" --project "$PROJECT_ID" >/dev/null 2>&1; then
+    # Pin edition=ENTERPRISE — ENTERPRISE_PLUS (the new default in some
+    # regions) rejects legacy shared-core tiers like db-f1-micro.
     run gcloud sql instances create "$DB_INSTANCE" \
       --database-version=POSTGRES_16 \
+      --edition=ENTERPRISE \
       --tier="$DB_TIER" \
       --region="$REGION" \
       --root-password="$(openssl rand -base64 32)" \
@@ -359,6 +362,7 @@ deploy_run() {
   local env_vars=(
     "APP_ENV=production"
     "GCP_PROJECT_ID=${PROJECT_ID}"
+    "FIREBASE_PROJECT_ID=${PROJECT_ID}"
     "KMS_KEY_NAME=${KMS_KEY_FULL}"
     "DATABASE_URL=postgresql+pg8000://${DB_USER}@/${DB_NAME}?unix_sock=/cloudsql/${DB_CONN}/.s.PGSQL.5432"
     "CORS_ALLOWED_ORIGINS=${FRONTEND_URL}"

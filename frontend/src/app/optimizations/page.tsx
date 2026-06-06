@@ -4,7 +4,7 @@ import { useState, useEffect } from "react"
 
 interface OptimizationPlan {
   id: number
-  user_id: str
+  user_id: string
   connection_id: number
   platform: string
   campaign_name: string
