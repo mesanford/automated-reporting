@@ -18,7 +18,7 @@ isolation invariants.
 from __future__ import annotations
 
 import calendar
-from datetime import datetime, timedelta
+from datetime import datetime
 from typing import Any, Dict, List, Optional, Tuple
 
 from sqlalchemy.orm import Session
@@ -96,7 +96,7 @@ def _sum_spend_for_budget(
             # Future schema can carry connection_id through; this is a
             # best-effort that's still useful.
             try:
-                conn_id = int(budget.scope_key)
+                conn_id = int(str(budget.scope_key))
             except (TypeError, ValueError):
                 continue
             conn = db.query(models.Connection).filter(models.Connection.id == conn_id).first()
@@ -167,7 +167,6 @@ def evaluate_budget_alerts(
     configured, fire a notification once per period if `pct_used` crosses
     that threshold. Dedupes via `last_alert_period`."""
     from app.services.notifications import send_google_chat_message
-    import os
 
     now = now or datetime.utcnow()
     budgets = (

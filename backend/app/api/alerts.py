@@ -1,7 +1,7 @@
 """Alert-rule CRUD. Mutations are owner/admin only."""
 from __future__ import annotations
 
-from typing import Any, List, Optional
+from typing import List, Optional
 
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
@@ -176,7 +176,7 @@ def create_alert(
         actor_subject=user_id,
         action="alert.create",
         target_type="alert_rule",
-        target_id=rule.id,
+        target_id=str(rule.id),
         payload={"name": body.name, "metric": body.metric, "threshold": body.threshold},
     )
     db.commit()

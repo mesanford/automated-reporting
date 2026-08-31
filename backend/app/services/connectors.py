@@ -1,5 +1,5 @@
 import pandas as pd
-from datetime import datetime, timedelta
+from datetime import date, datetime, timedelta
 import os
 import asyncio
 import json
@@ -22,6 +22,22 @@ except Exception:
     OAuthWebAuthCodeGrant = None  # type: ignore[assignment]
 from bingads.v13.reporting import ReportingServiceManager, ReportingDownloadParameters
 from bingads.service_client import ServiceClient
+
+
+def _demo_mode_allowed() -> bool:
+    """Whether fabricated (mock) connector data is allowed at all.
+
+    Requires an explicit `DEMO_MODE=1` opt-in, and is hard-refused in
+    production regardless of that flag — mirrors app.preflight's fail-loud
+    pattern for other unsafe-in-prod settings. There is no silent fallback:
+    callers that hit this returning False must raise, not substitute fake
+    data quietly.
+    """
+    from app.preflight import is_production
+
+    if is_production():
+        return False
+    return os.environ.get("DEMO_MODE", "0") == "1"
 
 
 class ConnectorError(Exception):
@@ -65,7 +81,7 @@ DEFAULT_META_REVENUE_ACTION_TYPES = [
 def _resolve_sync_window(
     start_date: Optional[str] = None,
     end_date: Optional[str] = None,
-) -> tuple[datetime.date, datetime.date]:
+) -> tuple[date, date]:
     today = datetime.utcnow().date()
 
     if bool(start_date) != bool(end_date):
@@ -204,7 +220,7 @@ def _parse_linkedin_error(response: httpx.Response, fallback: str) -> str:
                 message = f"{message} | Details: {details[0]}"
         # Also include the raw payload for comprehensive debugging
         message = f"{message} | Raw response: {str(payload)[:200]}"
-    except Exception as e:
+    except Exception:
         body = (response.text or "").strip()
         if body:
             message = f"{fallback} | Raw response: {body[:300]}"
@@ -353,7 +369,7 @@ async def _discover_meta_accounts(access_token: str) -> List[Dict[str, Any]]:
 
     async with httpx.AsyncClient(timeout=30.0) as client:
         while True:
-            request_params = dict(params)
+            request_params: Dict[str, Any] = dict(params)
             if after_cursor:
                 request_params["after"] = after_cursor
 
@@ -394,7 +410,7 @@ async def _discover_meta_accounts(access_token: str) -> List[Dict[str, Any]]:
 async def _discover_linkedin_accounts(access_token: str) -> List[Dict[str, Any]]:
     # LinkedIn Marketing API (REST) account discovery.
     url = "https://api.linkedin.com/rest/adAccounts"
-    params = {
+    params: Dict[str, Any] = {
         "q": "search",
         "count": 200,
     }
@@ -460,7 +476,7 @@ async def _discover_google_accounts(refresh_token: Optional[str]) -> List[Dict[s
     developer_token = _required_env("GOOGLE_ADS_DEVELOPER_TOKEN")
     client_id = _required_env("GOOGLE_ADS_CLIENT_ID")
     client_secret = _required_env("GOOGLE_ADS_CLIENT_SECRET")
-    final_refresh_token = (refresh_token or os.getenv("GOOGLE_ADS_REFRESH_TOKEN", "")).strip()
+    final_refresh_token = str(refresh_token or os.getenv("GOOGLE_ADS_REFRESH_TOKEN", "")).strip()
     if not final_refresh_token:
         raise ConnectorConfigError("Missing Google Ads refresh token for this connection.")
 
@@ -599,6 +615,31 @@ async def _discover_google_accounts(refresh_token: Optional[str]) -> List[Dict[s
             "currency": currency,
         })
     return accounts
+
+
+async def _discover_google_analytics_properties(refresh_token: Optional[str]) -> List[Dict[str, Any]]:
+    """List GA4 properties the connected user can access, via the Admin API
+    (a separate API surface from the Data API used for reporting)."""
+    from google.analytics.admin_v1beta import AnalyticsAdminServiceClient
+
+    credentials = _google_analytics_credentials(refresh_token)
+
+    def _list_properties() -> List[Dict[str, Any]]:
+        client = AnalyticsAdminServiceClient(credentials=credentials)
+        accounts: List[Dict[str, Any]] = []
+        for summary in client.list_account_summaries():
+            for prop_summary in summary.property_summaries:
+                # property_summary.property is "properties/{id}"
+                prop_id = prop_summary.property.split("/")[-1]
+                accounts.append({
+                    "id": prop_id,
+                    "name": prop_summary.display_name or f"GA4 Property {prop_id}",
+                    "status": "ACTIVE",
+                    "currency": "N/A",  # GA4 properties don't carry a currency at this level.
+                })
+        return accounts
+
+    return await asyncio.to_thread(_list_properties)
 
 
 def _normalize_ms_accounts_payload(raw_accounts: Any) -> List[Dict[str, Any]]:
@@ -968,12 +1009,26 @@ async def discover_ad_accounts(
         if not access_token:
             raise ConnectorConfigError("Missing LinkedIn access token for this connection.")
         accounts = await _discover_linkedin_accounts(access_token)
+    elif platform_key == "facebook_organic":
+        if not access_token:
+            raise ConnectorConfigError("Missing Facebook access token for this connection.")
+        accounts = await _discover_facebook_pages(access_token)
+    elif platform_key == "instagram_organic":
+        if not access_token:
+            raise ConnectorConfigError("Missing Instagram access token for this connection.")
+        accounts = await _discover_instagram_accounts(access_token)
+    elif platform_key == "linkedin_organic":
+        if not access_token:
+            raise ConnectorConfigError("Missing LinkedIn access token for this connection.")
+        accounts = await _discover_linkedin_organizations(access_token)
     elif platform_key == "tiktok":
         if not access_token:
             raise ConnectorConfigError("Missing TikTok access token for this connection.")
         accounts = await _discover_tiktok_accounts(access_token)
     elif platform_key == "google":
         accounts = await _discover_google_accounts(refresh_token)
+    elif platform_key == "google_analytics":
+        accounts = await _discover_google_analytics_properties(refresh_token)
     elif platform_key == "microsoft":
         if not access_token:
             raise ConnectorConfigError("Missing Microsoft access token for this connection.")
@@ -1017,9 +1072,18 @@ def _to_int(value: Any) -> int:
 
 
 def _build_dataframe(platform: str, account_id: str, rows: List[Dict[str, Any]]) -> pd.DataFrame:
+    # NOTE: organic_reach/organic_engagements/organic_shares/ga_sessions and
+    # _is_mock_data used to be silently dropped here — every connector's
+    # output funnels through this normalizer, but it only ever kept the
+    # paid-ads column set. That meant organic metrics never reached a
+    # report at all, for any organic connector, mock or real. Fixed by
+    # passing these through (defaulting to 0/False for platforms that don't
+    # produce them, matching etl.py's UNIVERSAL_COLUMNS fill-with-0 pattern).
     required_cols = [
         "date", "platform", "campaign", "ad_group", "ad_asset",
         "spend", "impressions", "clicks", "conversions", "revenue", "source_account_id",
+        "organic_reach", "organic_engagements", "organic_shares", "ga_sessions",
+        "_is_mock_data",
     ]
     if not rows:
         return pd.DataFrame(columns=required_cols)
@@ -1038,6 +1102,11 @@ def _build_dataframe(platform: str, account_id: str, rows: List[Dict[str, Any]])
             "conversions": _to_float(row.get("conversions")),
             "revenue": _to_float(row.get("revenue")),
             "source_account_id": account_id,
+            "organic_reach": _to_int(row.get("organic_reach")),
+            "organic_engagements": _to_int(row.get("organic_engagements")),
+            "organic_shares": _to_int(row.get("organic_shares")),
+            "ga_sessions": _to_int(row.get("ga_sessions")),
+            "_is_mock_data": bool(row.get("_is_mock_data", False)),
         })
 
     return pd.DataFrame(normalized, columns=required_cols)
@@ -1052,7 +1121,7 @@ async def _fetch_google_performance(
     developer_token = _required_env("GOOGLE_ADS_DEVELOPER_TOKEN")
     client_id = _required_env("GOOGLE_ADS_CLIENT_ID")
     client_secret = _required_env("GOOGLE_ADS_CLIENT_SECRET")
-    final_refresh_token = (refresh_token or os.getenv("GOOGLE_ADS_REFRESH_TOKEN", "")).strip()
+    final_refresh_token = str(refresh_token or os.getenv("GOOGLE_ADS_REFRESH_TOKEN", "")).strip()
     if not final_refresh_token:
         raise ConnectorConfigError("Missing Google Ads refresh token for this connection.")
 
@@ -1107,6 +1176,107 @@ async def _fetch_google_performance(
 
     rows = await asyncio.to_thread(_run_query)
     return _build_dataframe("google", account_id, rows)
+
+
+def _google_analytics_credentials(refresh_token: Optional[str]):
+    """Build google.oauth2.credentials.Credentials for the GA4 Data/Admin
+    API clients. Reuses the same Google Ads OAuth client (see
+    app/api/oauth.py `_platform_client_id`) — one Google Cloud OAuth client
+    can hold multiple incrementally-granted scopes."""
+    from google.oauth2.credentials import Credentials
+
+    client_id = _required_env("GOOGLE_ADS_CLIENT_ID")
+    client_secret = _required_env("GOOGLE_ADS_CLIENT_SECRET")
+    final_refresh_token = (refresh_token or "").strip()
+    if not final_refresh_token:
+        raise ConnectorConfigError("Missing Google Analytics refresh token for this connection.")
+
+    return Credentials(
+        token=None,
+        refresh_token=final_refresh_token,
+        token_uri="https://oauth2.googleapis.com/token",
+        client_id=client_id,
+        client_secret=client_secret,
+        scopes=["https://www.googleapis.com/auth/analytics.readonly"],
+    )
+
+
+# GA4's channel grouping buckets all traffic (paid, organic, direct,
+# referral, etc.) into one dimension. This app's Universal Schema treats
+# GA4 as an organic-only source (see docs/organic-and-ga4-integration-plan.md
+# Part B4) — filtering to these channel groups is what keeps GA4 sessions
+# out of the "paid" bucket alongside Google/Meta/LinkedIn/TikTok Ads, which
+# would otherwise double-count traffic those platforms already report spend
+# for. Revisit this filter if GA4 is ever used for all-traffic reporting
+# instead.
+GA4_ORGANIC_CHANNEL_GROUPS = [
+    "Organic Search", "Organic Social", "Organic Video", "Organic Shopping",
+]
+
+
+async def _fetch_google_analytics(
+    property_id: str,
+    refresh_token: Optional[str],
+    start_date: Optional[str] = None,
+    end_date: Optional[str] = None,
+) -> pd.DataFrame:
+    from google.analytics.data_v1beta import BetaAnalyticsDataClient
+    from google.analytics.data_v1beta.types import (
+        DateRange, Dimension, Metric, RunReportRequest, FilterExpression, Filter,
+    )
+
+    credentials = _google_analytics_credentials(refresh_token)
+    window_start, window_end = _resolve_sync_window(start_date, end_date)
+    prop = property_id if str(property_id).startswith("properties/") else f"properties/{property_id}"
+
+    def _run_report() -> List[Dict[str, Any]]:
+        client = BetaAnalyticsDataClient(credentials=credentials)
+        request = RunReportRequest(
+            property=prop,
+            date_ranges=[DateRange(start_date=window_start.isoformat(), end_date=window_end.isoformat())],
+            dimensions=[Dimension(name="date"), Dimension(name="sessionDefaultChannelGroup")],
+            metrics=[
+                Metric(name="sessions"),
+                Metric(name="engagedSessions"),
+                Metric(name="conversions"),
+                Metric(name="totalRevenue"),
+            ],
+            dimension_filter=FilterExpression(
+                filter=Filter(
+                    field_name="sessionDefaultChannelGroup",
+                    in_list_filter=Filter.InListFilter(values=GA4_ORGANIC_CHANNEL_GROUPS),
+                )
+            ),
+        )
+        response = client.run_report(request)
+        records: List[Dict[str, Any]] = []
+        for row in response.rows:
+            raw_date = row.dimension_values[0].value  # YYYYMMDD
+            date_str = f"{raw_date[0:4]}-{raw_date[4:6]}-{raw_date[6:8]}" if len(raw_date) == 8 else raw_date
+            channel_group = row.dimension_values[1].value
+            sessions = int(float(row.metric_values[0].value or 0))
+            engaged_sessions = int(float(row.metric_values[1].value or 0))
+            conversions = float(row.metric_values[2].value or 0)
+            revenue = float(row.metric_values[3].value or 0)
+            records.append({
+                "date": date_str,
+                "campaign": channel_group,  # No campaign concept for organic GA4 traffic — group by channel instead.
+                "ad_group": "N/A",
+                "ad_asset": "N/A",
+                "spend": 0.0,  # GA4 has no spend concept; that lives in each platform's own Ads connector.
+                "impressions": 0,  # GA4 has no impressions concept for organic sessions.
+                "clicks": engaged_sessions,
+                "conversions": conversions,
+                "revenue": revenue,
+                "organic_reach": sessions,
+                "organic_engagements": engaged_sessions,
+                "organic_shares": 0,  # Not tracked by GA4.
+                "ga_sessions": sessions,
+            })
+        return records
+
+    rows = await asyncio.to_thread(_run_report)
+    return _build_dataframe("google_analytics", property_id, rows)
 
 
 def _action_matches(action_type: str, accepted: List[str]) -> bool:
@@ -1169,7 +1339,7 @@ async def _fetch_meta_performance(
     after_cursor: Optional[str] = None
     async with httpx.AsyncClient(timeout=45.0) as client:
         while True:
-            request_params = dict(params)
+            request_params: Dict[str, Any] = dict(params)
             if after_cursor:
                 request_params["after"] = after_cursor
 
@@ -1258,8 +1428,8 @@ async def _fetch_linkedin_performance(
     rows = []
     for rec in payload.get("elements", []):
         date_range = rec.get("dateRange", {})
-        end_date = date_range.get("end", {})
-        date_str = f"{end_date.get('year', window_end.year):04d}-{end_date.get('month', window_end.month):02d}-{end_date.get('day', window_end.day):02d}"
+        end_date_parts: Dict[str, Any] = date_range.get("end", {}) if isinstance(date_range, dict) else {}
+        date_str = f"{end_date_parts.get('year', window_end.year):04d}-{end_date_parts.get('month', window_end.month):02d}-{end_date_parts.get('day', window_end.day):02d}"
         pivot_values = rec.get("pivotValues", [])
         campaign_urn = str(pivot_values[0] if isinstance(pivot_values, list) and pivot_values else rec.get("campaign", ""))
         rows.append({
@@ -1584,6 +1754,8 @@ async def fetch_platform_data(
     platform_key = (platform or "").strip().lower()
     if platform_key == "google":
         return await _fetch_google_performance(account_id, refresh_token, start_date, end_date)
+    if platform_key == "google_analytics":
+        return await _fetch_google_analytics(account_id, refresh_token, start_date, end_date)
     if platform_key == "meta":
         return await _fetch_meta_performance(account_id, access_token or "", start_date, end_date)
     if platform_key == "linkedin":
@@ -1600,4 +1772,529 @@ async def fetch_platform_data(
             start_date,
             end_date,
         )
+    if platform_key == "facebook_organic":
+        return await _fetch_facebook_organic(account_id, access_token or "", start_date, end_date)
+    if platform_key == "instagram_organic":
+        return await _fetch_instagram_organic(account_id, access_token or "", start_date, end_date)
+    if platform_key == "linkedin_organic":
+        return await _fetch_linkedin_organic(account_id, access_token or "", start_date, end_date)
     raise ConnectorConfigError(f"Unsupported platform: {platform_key}")
+
+
+# ── Organic connectors ───────────────────────────────────────────────────────
+#
+# Real API calls below follow documented Meta Graph API / LinkedIn Marketing
+# API shapes as of this writing. Both platforms version and reshape these
+# endpoints periodically — verify against current provider docs before
+# relying on this in production, and watch for HTTP 4xx responses citing a
+# deprecated field/metric name. Falls back to fabricated demo data ONLY when
+# there's no access token AND _demo_mode_allowed() explicitly permits it —
+# never silently, never in production. A real token with a real API failure
+# raises ConnectorError; it does not silently degrade to fake numbers.
+
+async def _get_meta_page_access_token(page_id: str, user_access_token: str) -> str:
+    """Page-level API calls (feed, insights) require a Page access token,
+    not the user's own token. Exchange for one via the Page's own /me-style
+    lookup, using the same appsecret_proof scheme as the rest of the Meta
+    connector."""
+    url = f"https://graph.facebook.com/v20.0/{page_id}"
+    params = {
+        "fields": "access_token",
+        "appsecret_proof": _meta_appsecret_proof(user_access_token),
+    }
+    headers = {"Authorization": f"Bearer {user_access_token}"}
+    async with httpx.AsyncClient(timeout=30.0) as client:
+        resp = await client.get(url, headers=headers, params=params)
+        try:
+            resp.raise_for_status()
+        except httpx.HTTPStatusError as exc:
+            raise ConnectorError(f"Could not resolve Page access token for {page_id}: {exc}") from exc
+    page_token = resp.json().get("access_token")
+    if not page_token:
+        raise ConnectorError(
+            f"Page {page_id} did not return an access_token — the connected "
+            "user may no longer be an admin of this Page, or the "
+            "pages_show_list/pages_read_engagement scopes were revoked."
+        )
+    return page_token
+
+
+async def _discover_facebook_pages(access_token: str) -> List[Dict[str, Any]]:
+    """List Facebook Pages the connected user administers. Used for both
+    Facebook Organic and (as the parent lookup) Instagram Organic."""
+    url = "https://graph.facebook.com/v20.0/me/accounts"
+    headers = {"Authorization": f"Bearer {access_token}"}
+    appsecret_proof = _meta_appsecret_proof(access_token)
+    params = {
+        "fields": "id,name,category",
+        "limit": 200,
+        "appsecret_proof": appsecret_proof,
+    }
+    accounts: List[Dict[str, Any]] = []
+    after_cursor: Optional[str] = None
+
+    async with httpx.AsyncClient(timeout=30.0) as client:
+        while True:
+            request_params: Dict[str, Any] = dict(params)
+            if after_cursor:
+                request_params["after"] = after_cursor
+            response = await client.get(url, headers=headers, params=request_params)
+            try:
+                response.raise_for_status()
+            except httpx.HTTPStatusError as exc:
+                raise ConnectorError(f"Facebook Page discovery failed: {exc}") from exc
+            payload = response.json()
+            for row in payload.get("data", []):
+                accounts.append({
+                    "id": str(row.get("id", "")),
+                    "name": row.get("name") or f"Page {row.get('id')}",
+                    "status": "ACTIVE",
+                    "currency": "N/A",  # Pages don't have a currency; kept for shape parity with ad accounts.
+                })
+            after_cursor = payload.get("paging", {}).get("cursors", {}).get("after")
+            if not after_cursor:
+                break
+    return accounts
+
+
+async def _discover_instagram_accounts(access_token: str) -> List[Dict[str, Any]]:
+    """Instagram Business accounts are discovered via their linked Facebook
+    Page, not directly — list Pages, then resolve each Page's
+    instagram_business_account."""
+    pages = await _discover_facebook_pages(access_token)
+    accounts: List[Dict[str, Any]] = []
+    appsecret_proof = _meta_appsecret_proof(access_token)
+    headers = {"Authorization": f"Bearer {access_token}"}
+    async with httpx.AsyncClient(timeout=30.0) as client:
+        for page in pages:
+            url = f"https://graph.facebook.com/v20.0/{page['id']}"
+            params = {"fields": "instagram_business_account{id,username}", "appsecret_proof": appsecret_proof}
+            resp = await client.get(url, headers=headers, params=params)
+            if resp.status_code >= 400:
+                continue  # Page has no linked IG account, or lacks permission — skip, don't fail discovery.
+            ig = resp.json().get("instagram_business_account")
+            if ig and ig.get("id"):
+                accounts.append({
+                    "id": str(ig["id"]),
+                    "name": ig.get("username") or f"Instagram {ig['id']}",
+                    "status": "ACTIVE",
+                    "currency": "N/A",
+                    # Instagram Insights calls need the *Page's* access token, keep the
+                    # linkage so the fetch function doesn't need to re-discover it.
+                    "_parent_page_id": page["id"],
+                })
+    return accounts
+
+
+async def _fetch_facebook_organic(account_id: str, access_token: str, start_date: Optional[str], end_date: Optional[str]) -> pd.DataFrame:
+    if not access_token or access_token.strip() == "":
+        if not _demo_mode_allowed():
+            raise ConnectorConfigError(
+                "Missing Facebook Organic access token. Reconnect the Page, or set "
+                "DEMO_MODE=1 in a non-production environment to use demo data."
+            )
+        return _generate_mock_organic_data("facebook_organic", account_id, start_date, end_date)
+
+    window_start, window_end = _resolve_sync_window(start_date, end_date)
+    page_token = await _get_meta_page_access_token(account_id, access_token)
+    page_appsecret_proof = _meta_appsecret_proof(page_token)
+
+    rows: List[Dict[str, Any]] = []
+    async with httpx.AsyncClient(timeout=45.0) as client:
+        feed_url = f"https://graph.facebook.com/v20.0/{account_id}/feed"
+        feed_params = {
+            "fields": "id,message,created_time",
+            "since": int(datetime.combine(window_start, datetime.min.time()).timestamp()),
+            "until": int(datetime.combine(window_end, datetime.min.time()).timestamp()) + 86400,
+            "limit": 100,
+            "access_token": page_token,
+            "appsecret_proof": page_appsecret_proof,
+        }
+        after_cursor: Optional[str] = None
+        while True:
+            request_params: Dict[str, Any] = dict(feed_params)
+            if after_cursor:
+                request_params["after"] = after_cursor
+            resp = await client.get(feed_url, params=request_params)
+            try:
+                resp.raise_for_status()
+            except httpx.HTTPStatusError as exc:
+                raise ConnectorError(f"Facebook Organic feed fetch failed: {exc}") from exc
+            payload = resp.json()
+            posts = payload.get("data", [])
+
+            for post in posts:
+                post_id = post.get("id")
+                if not post_id:
+                    continue
+                insights_url = f"https://graph.facebook.com/v20.0/{post_id}/insights"
+                insights_params = {
+                    "metric": "post_impressions_unique,post_engaged_users,post_clicks",
+                    "access_token": page_token,
+                    "appsecret_proof": page_appsecret_proof,
+                }
+                insights_resp = await client.get(insights_url, params=insights_params)
+                metrics: Dict[str, int] = {}
+                if insights_resp.status_code < 400:
+                    for m in insights_resp.json().get("data", []):
+                        values = m.get("values", [])
+                        metrics[m.get("name", "")] = _to_int(values[0].get("value")) if values else 0
+                # else: insights can 400 for posts with too little engagement to
+                # report on, or non-organic (boosted) posts — treat as zero rather
+                # than failing the whole sync.
+
+                shares_resp = await client.get(
+                    f"https://graph.facebook.com/v20.0/{post_id}",
+                    params={"fields": "shares", "access_token": page_token, "appsecret_proof": page_appsecret_proof},
+                )
+                share_count = 0
+                if shares_resp.status_code < 400:
+                    share_count = _to_int(shares_resp.json().get("shares", {}).get("count"))
+
+                created = str(post.get("created_time", ""))[:10]
+                rows.append({
+                    "date": created,
+                    "campaign": (post.get("message") or "Untitled post")[:120],
+                    "ad_group": "N/A",
+                    "ad_asset": "N/A",
+                    "spend": 0.0,
+                    "impressions": metrics.get("post_impressions_unique", 0),
+                    "clicks": metrics.get("post_clicks", 0),
+                    "conversions": 0,
+                    "revenue": 0.0,
+                    "organic_reach": metrics.get("post_impressions_unique", 0),
+                    "organic_engagements": metrics.get("post_engaged_users", 0),
+                    "organic_shares": share_count,
+                    "ga_sessions": 0,
+                })
+
+            after_cursor = payload.get("paging", {}).get("cursors", {}).get("after")
+            if not after_cursor:
+                break
+
+    return _build_dataframe("facebook_organic", account_id, rows)
+
+
+async def _fetch_instagram_organic(account_id: str, access_token: str, start_date: Optional[str], end_date: Optional[str]) -> pd.DataFrame:
+    if not access_token or access_token.strip() == "":
+        if not _demo_mode_allowed():
+            raise ConnectorConfigError(
+                "Missing Instagram Organic access token. Reconnect the account, or set "
+                "DEMO_MODE=1 in a non-production environment to use demo data."
+            )
+        return _generate_mock_organic_data("instagram_organic", account_id, start_date, end_date)
+
+    # account_id here is the IG Business Account id (see _discover_instagram_accounts).
+    # Resolving the linked Page's access token requires re-discovering the
+    # parent Page — account selection doesn't currently persist the
+    # `_parent_page_id` hint past the discovery response, so callers that
+    # cache `available_accounts` (Connection.available_accounts) should read
+    # it from there instead of re-running discovery on every sync.
+    window_start, window_end = _resolve_sync_window(start_date, end_date)
+
+    pages = await _discover_facebook_pages(access_token)
+    parent_page_id: Optional[str] = None
+    appsecret_proof = _meta_appsecret_proof(access_token)
+    headers = {"Authorization": f"Bearer {access_token}"}
+    async with httpx.AsyncClient(timeout=30.0) as client:
+        for page in pages:
+            resp = await client.get(
+                f"https://graph.facebook.com/v20.0/{page['id']}",
+                headers=headers,
+                params={"fields": "instagram_business_account", "appsecret_proof": appsecret_proof},
+            )
+            if resp.status_code >= 400:
+                continue
+            ig = resp.json().get("instagram_business_account") or {}
+            if str(ig.get("id", "")) == str(account_id):
+                parent_page_id = page["id"]
+                break
+
+    if not parent_page_id:
+        raise ConnectorError(
+            f"Could not find a Facebook Page linked to Instagram account {account_id} — "
+            "it may have been unlinked, or permissions were revoked."
+        )
+
+    page_token = await _get_meta_page_access_token(parent_page_id, access_token)
+    page_appsecret_proof = _meta_appsecret_proof(page_token)
+
+    rows: List[Dict[str, Any]] = []
+    async with httpx.AsyncClient(timeout=45.0) as client:
+        media_url = f"https://graph.facebook.com/v20.0/{account_id}/media"
+        media_params = {
+            "fields": "id,caption,timestamp",
+            "since": int(datetime.combine(window_start, datetime.min.time()).timestamp()),
+            "until": int(datetime.combine(window_end, datetime.min.time()).timestamp()) + 86400,
+            "limit": 100,
+            "access_token": page_token,
+            "appsecret_proof": page_appsecret_proof,
+        }
+        after_cursor: Optional[str] = None
+        while True:
+            request_params: Dict[str, Any] = dict(media_params)
+            if after_cursor:
+                request_params["after"] = after_cursor
+            resp = await client.get(media_url, params=request_params)
+            try:
+                resp.raise_for_status()
+            except httpx.HTTPStatusError as exc:
+                raise ConnectorError(f"Instagram Organic media fetch failed: {exc}") from exc
+            payload = resp.json()
+            media_items = payload.get("data", [])
+
+            for media in media_items:
+                media_id = media.get("id")
+                if not media_id:
+                    continue
+                insights_url = f"https://graph.facebook.com/v20.0/{media_id}/insights"
+                insights_params = {
+                    # `impressions` was deprecated for IG API v22+ in favor of `views`
+                    # for some media types — verify current metric availability
+                    # against Meta's changelog before relying on this in production.
+                    "metric": "reach,engagement,saved,shares",
+                    "access_token": page_token,
+                    "appsecret_proof": page_appsecret_proof,
+                }
+                insights_resp = await client.get(insights_url, params=insights_params)
+                metrics: Dict[str, int] = {}
+                if insights_resp.status_code < 400:
+                    for m in insights_resp.json().get("data", []):
+                        values = m.get("values", [])
+                        metrics[m.get("name", "")] = _to_int(values[0].get("value")) if values else 0
+
+                created = str(media.get("timestamp", ""))[:10]
+                rows.append({
+                    "date": created,
+                    "campaign": (media.get("caption") or "Untitled post")[:120],
+                    "ad_group": "N/A",
+                    "ad_asset": "N/A",
+                    "spend": 0.0,
+                    "impressions": metrics.get("reach", 0),
+                    "clicks": 0,  # IG has no direct link-click metric on organic posts.
+                    "conversions": 0,
+                    "revenue": 0.0,
+                    "organic_reach": metrics.get("reach", 0),
+                    "organic_engagements": metrics.get("engagement", 0),
+                    "organic_shares": metrics.get("shares", 0),
+                    "ga_sessions": 0,
+                })
+
+            after_cursor = payload.get("paging", {}).get("cursors", {}).get("after")
+            if not after_cursor:
+                break
+
+    return _build_dataframe("instagram_organic", account_id, rows)
+
+
+async def _discover_linkedin_organizations(access_token: str) -> List[Dict[str, Any]]:
+    """List LinkedIn Organization Pages the connected user administers."""
+    url = "https://api.linkedin.com/rest/organizationAcls"
+    params = {"q": "roleAssignee", "role": "ADMINISTRATOR", "state": "APPROVED"}
+    payload: Dict[str, Any] = {}
+    last_error = "LinkedIn organization discovery failed"
+
+    async with httpx.AsyncClient(timeout=30.0) as client:
+        for version in _linkedin_version_candidates():
+            headers = _linkedin_headers(access_token, version)
+            response = await client.get(url, headers=headers, params=params)
+            if _linkedin_version_unsupported(response):
+                last_error = f"LinkedIn API version {version} is no longer supported"
+                continue
+            if response.status_code >= 400:
+                message = _parse_linkedin_error(response, "LinkedIn organization discovery failed")
+                raise ConnectorError(f"{message} (code {response.status_code})")
+            payload = response.json()
+            break
+
+        if not payload:
+            raise ConnectorError(last_error)
+
+        org_ids = []
+        for row in payload.get("elements", []):
+            urn = str(row.get("organization", ""))
+            org_id = urn.replace("urn:li:organization:", "")
+            if org_id:
+                org_ids.append(org_id)
+
+        accounts: List[Dict[str, Any]] = []
+        for org_id in org_ids:
+            name = f"LinkedIn Organization {org_id}"
+            for version in _linkedin_version_candidates():
+                headers = _linkedin_headers(access_token, version)
+                resp = await client.get(
+                    f"https://api.linkedin.com/rest/organizations/{org_id}",
+                    headers=headers,
+                    params={"projection": "(id,localizedName)"},
+                )
+                if _linkedin_version_unsupported(resp):
+                    continue
+                if resp.status_code < 400:
+                    name = resp.json().get("localizedName") or name
+                break
+            accounts.append({"id": org_id, "name": name, "status": "ACTIVE", "currency": "N/A"})
+    return accounts
+
+
+async def _fetch_linkedin_organic(account_id: str, access_token: str, start_date: Optional[str], end_date: Optional[str]) -> pd.DataFrame:
+    if not access_token or access_token.strip() == "":
+        if not _demo_mode_allowed():
+            raise ConnectorConfigError(
+                "Missing LinkedIn Organic access token. Reconnect the organization, or set "
+                "DEMO_MODE=1 in a non-production environment to use demo data."
+            )
+        return _generate_mock_organic_data("linkedin_organic", account_id, start_date, end_date)
+
+    window_start, window_end = _resolve_sync_window(start_date, end_date)
+    org_urn = f"urn:li:organization:{account_id}"
+
+    # organizationalEntityShareStatistics returns one aggregate bucket per
+    # call unless timeIntervals with DAY granularity is supplied — daily
+    # granularity is what the Universal Schema's per-date rows need.
+    params: Dict[str, Any] = {
+        "q": "organizationalEntity",
+        "organizationalEntity": org_urn,
+        "timeIntervals.timeGranularityType": "DAY",
+        "timeIntervals.timeRange.start": int(datetime.combine(window_start, datetime.min.time()).timestamp() * 1000),
+        "timeIntervals.timeRange.end": int(datetime.combine(window_end, datetime.min.time()).timestamp() * 1000) + 86400000,
+    }
+    url = "https://api.linkedin.com/rest/organizationalEntityShareStatistics"
+    payload: Dict[str, Any] = {}
+    last_error = "LinkedIn share statistics fetch failed"
+
+    async with httpx.AsyncClient(timeout=45.0) as client:
+        for version in _linkedin_version_candidates():
+            headers = _linkedin_headers(access_token, version)
+            response = await client.get(url, headers=headers, params=params)
+            if _linkedin_version_unsupported(response):
+                last_error = f"LinkedIn API version {version} is no longer supported"
+                continue
+            if response.status_code >= 400:
+                message = _parse_linkedin_error(response, "LinkedIn share statistics fetch failed")
+                raise ConnectorError(f"{message} (code {response.status_code})")
+            payload = response.json()
+            break
+
+    if not payload:
+        raise ConnectorError(last_error)
+
+    rows: List[Dict[str, Any]] = []
+    for element in payload.get("elements", []):
+        stats = element.get("totalShareStatistics", {})
+        time_range = element.get("timeRange", {})
+        start_ms = time_range.get("start")
+        bucket_date = (
+            datetime.utcfromtimestamp(start_ms / 1000).strftime("%Y-%m-%d")
+            if start_ms else window_start.strftime("%Y-%m-%d")
+        )
+        impressions = _to_int(stats.get("impressionCount"))
+        engagements = (
+            _to_int(stats.get("likeCount"))
+            + _to_int(stats.get("commentCount"))
+            + _to_int(stats.get("clickCount"))
+        )
+        rows.append({
+            "date": bucket_date,
+            "campaign": "LinkedIn Organization Posts",
+            "ad_group": "N/A",
+            "ad_asset": "N/A",
+            "spend": 0.0,
+            "impressions": impressions,
+            "clicks": _to_int(stats.get("clickCount")),
+            "conversions": 0,
+            "revenue": 0.0,
+            "organic_reach": _to_int(stats.get("uniqueImpressionsCount")) or impressions,
+            "organic_engagements": engagements,
+            "organic_shares": _to_int(stats.get("shareCount")),
+            "ga_sessions": 0,
+        })
+
+    return _build_dataframe("linkedin_organic", account_id, rows)
+
+
+def _generate_mock_organic_data(platform: str, account_id: str, start_date: Optional[str], end_date: Optional[str]) -> pd.DataFrame:
+    import random
+    from datetime import timedelta
+    
+    window_start, window_end = _resolve_sync_window(start_date, end_date)
+    records = []
+    
+    # Pre-defined high-quality posts
+    post_options = {
+        "facebook_organic": [
+            "We just rolled out a new visual analytics feature to our reporting tool. Check it out!",
+            "How digital agencies can save up to 20 hours a week by automating cross-channel dashboards.",
+            "Paid Ads vs Organic Social: Where should you focus your marketing budgets in 2026?",
+            "Customer spotlight: how Antigravity helped a digital agency scale their marketing analysis.",
+            "Quick tip: use custom KPIs to track blended CPA and Total ROAS across all your active channels.",
+        ],
+        "instagram_organic": [
+            "Behind the scenes at Antigravity: designing our new premium dashboard! 🎬✨",
+            "Say goodbye to manual spreadsheet reporting! 📊 Automate in seconds. Link in bio.",
+            "Client testimonial: 'Antigravity completely changed how we report performance to CMOs.' ⭐⭐⭐⭐⭐",
+            "Why agencies love our custom KPIs and scheduled email digests. 💌",
+            "Spotting budget-shift opportunities is easy with Gemini. 🚀✨",
+        ],
+        "linkedin_organic": [
+            "Excited to share our technical integration plan for GA4 and Organic Social channels. 🚀",
+            "AI-powered digital advertising reporting: removing manual bottlenecks for marketers.",
+            "We are hiring a Senior Product Engineer to join our decentralized development team. 💼",
+            "How envelope encryption and KMS keyring storage secure customer OAuth credentials at rest.",
+            "Agile data analytics: mapping disparate CSV schemas automatically into a Universal Schema.",
+        ]
+    }
+    
+    posts = post_options.get(platform, ["New update and dashboard tips."])
+    
+    current = window_start
+    while current <= window_end:
+        # Every 1-2 days we publish a post
+        if random.random() > 0.4:
+            campaign_name = random.choice(posts)
+            
+            if platform == "facebook_social" or platform == "facebook_organic":
+                reach = random.randint(600, 4800)
+                engagement = int(reach * random.uniform(0.03, 0.09))
+                shares = int(engagement * random.uniform(0.04, 0.12))
+                sessions = int(engagement * random.uniform(0.25, 0.55))
+                conversions = int(sessions * random.uniform(0.015, 0.045))
+                revenue = round(conversions * random.uniform(60, 140), 2)
+            elif platform == "instagram_organic":
+                reach = random.randint(1200, 7500)
+                engagement = int(reach * random.uniform(0.05, 0.14))
+                shares = int(engagement * random.uniform(0.08, 0.22))
+                sessions = int(engagement * random.uniform(0.12, 0.32))
+                conversions = int(sessions * random.uniform(0.01, 0.035))
+                revenue = round(conversions * random.uniform(50, 110), 2)
+            else:  # linkedin_organic
+                reach = random.randint(800, 5500)
+                engagement = int(reach * random.uniform(0.04, 0.11))
+                shares = int(engagement * random.uniform(0.06, 0.18))
+                sessions = int(engagement * random.uniform(0.2, 0.5))
+                conversions = int(sessions * random.uniform(0.02, 0.055))
+                revenue = round(conversions * random.uniform(70, 180), 2)
+                
+            records.append({
+                "date": current.strftime('%Y-%m-%d'),
+                "campaign": campaign_name,
+                "ad_group": "N/A",
+                "ad_asset": "N/A",
+                "spend": 0.0,
+                "impressions": reach,
+                "clicks": engagement,
+                "conversions": conversions,
+                "revenue": revenue,
+                "organic_reach": reach,
+                "organic_engagements": engagement,
+                "organic_shares": shares,
+                "ga_sessions": sessions,
+                # Flags this row as fabricated so etl.aggregate_data can
+                # surface `usedMockData` to callers instead of presenting
+                # it as real. Never remove without also removing the
+                # DEMO_MODE gate in _fetch_*_organic below.
+                "_is_mock_data": True,
+            })
+            
+        current += timedelta(days=1)
+        
+    return _build_dataframe(platform, account_id, records)

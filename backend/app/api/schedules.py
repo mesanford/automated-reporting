@@ -17,7 +17,6 @@ from app import models
 from app.api.auth import (
     get_current_user,
     record_audit,
-    require_role,
 )
 from app.api.internal import _verify_oidc
 from app.database import SessionLocal, get_db
@@ -109,7 +108,7 @@ def create_schedule(
         )
         .first()
     )
-    if m.role not in {"owner", "admin"}:
+    if not m or m.role not in {"owner", "admin"}:
         raise HTTPException(status_code=403, detail="Requires owner or admin role.")
 
     err = validate_schedule_inputs(
@@ -142,7 +141,7 @@ def create_schedule(
         actor_subject=user_id,
         action="schedule.create",
         target_type="scheduled_sync",
-        target_id=sched.id,
+        target_id=str(sched.id),
         payload={"name": body.name, "frequency": body.frequency, "hour_utc": body.hour_utc},
     )
     db.commit()
@@ -215,7 +214,7 @@ def update_schedule(
         actor_subject=user_id,
         action="schedule.update",
         target_type="scheduled_sync",
-        target_id=sched.id,
+        target_id=str(sched.id),
         payload={"is_active": bool(sched.is_active), "name": sched.name},
     )
     db.commit()
@@ -258,7 +257,7 @@ def delete_schedule(
         actor_subject=user_id,
         action="schedule.delete",
         target_type="scheduled_sync",
-        target_id=sched.id,
+        target_id=str(sched.id),
         payload={"name": sched.name},
     )
     db.delete(sched)

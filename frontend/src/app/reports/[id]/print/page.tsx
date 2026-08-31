@@ -3,6 +3,7 @@
 import React, { useEffect, useState } from 'react';
 import { useParams } from 'next/navigation';
 import ReactMarkdown from 'react-markdown';
+import { AlertTriangle } from 'lucide-react';
 import { apiJson } from '@/lib/api';
 import { useWorkspace } from '@/lib/workspace';
 
@@ -24,6 +25,7 @@ interface PrintableReport {
   topPerformer: Record<string, unknown> | null;
   bottomPerformer: Record<string, unknown> | null;
   geminiAnalysis: string | null;
+  usedMockData?: boolean;
 }
 
 const METRIC_ROWS: Array<[keyof PrintableReport['scorecards'] & string, string, string]> = [
@@ -106,6 +108,19 @@ export default function PrintableReportPage() {
         </p>
         {active && <p className="text-xs text-slate-400">Workspace: {active.name} ({ccy})</p>}
       </section>
+
+      {report.usedMockData && (
+        <section className="mb-8 flex items-start gap-3 p-4 bg-amber-50 border border-amber-200 rounded-2xl print:border-2 print:border-amber-500">
+          <AlertTriangle size={20} className="text-amber-600 mt-0.5 flex-shrink-0" />
+          <p className="text-sm text-amber-900">
+            <span className="font-black uppercase tracking-wide">Includes fabricated demo data.</span>{' '}
+            At least one connected channel in this report has no live API integration yet
+            (Facebook Organic, Instagram Organic, or LinkedIn Organic), so its numbers are
+            randomly generated sample data, not real performance figures. All other channels
+            in this report are real.
+          </p>
+        </section>
+      )}
 
       {/* Scorecards */}
       <section className="mb-8 break-inside-avoid">

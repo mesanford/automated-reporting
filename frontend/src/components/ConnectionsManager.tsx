@@ -159,12 +159,24 @@ interface ConnectionDiagnostic {
   issues: string[];
 }
 
+// `noRealIntegration: true` means this platform has no live API integration
+// at all — connecting it can only ever produce demo/mock data (gated behind
+// DEMO_MODE server-side; refused entirely in production).
+//
+// `newIntegration: true` means real API calls exist in connectors.py but
+// haven't yet been verified against a live account — worth a "Beta" flag so
+// users double-check numbers against the platform's native reporting before
+// using them in a client deliverable. Remove once verified in production.
 const PLATFORMS = [
   { id: 'google', name: 'Google Ads', color: 'blue' },
   { id: 'meta', name: 'Meta Ads', color: 'indigo' },
   { id: 'linkedin', name: 'LinkedIn Ads', color: 'sky' },
   { id: 'tiktok', name: 'TikTok Ads', color: 'pink' },
-  { id: 'microsoft', name: 'Microsoft Ads', color: 'emerald' }
+  { id: 'microsoft', name: 'Microsoft Ads', color: 'emerald' },
+  { id: 'facebook_organic', name: 'Facebook Organic', color: 'blue', newIntegration: true },
+  { id: 'instagram_organic', name: 'Instagram Organic', color: 'pink', newIntegration: true },
+  { id: 'linkedin_organic', name: 'LinkedIn Organic', color: 'sky', newIntegration: true },
+  { id: 'google_analytics', name: 'Google Analytics (GA4)', color: 'amber', newIntegration: true },
 ];
 
 export const ConnectionsManager: React.FC<ConnectionsManagerProps> = ({ 
@@ -727,7 +739,17 @@ export const ConnectionsManager: React.FC<ConnectionsManagerProps> = ({
                     <Zap size={20} className="fill-current" />
                   </div>
                   <div>
-                    <p className="text-sm font-black text-slate-800 uppercase tracking-tight">{conn.platform}</p>
+                    <p className="text-sm font-black text-slate-800 uppercase tracking-tight flex items-center gap-2">
+                      {conn.platform}
+                      {PLATFORMS.find((p) => p.id === conn.platform)?.newIntegration && (
+                        <span
+                          className="px-2 py-0.5 rounded-full text-[10px] font-black uppercase tracking-wide bg-blue-100 text-blue-700 normal-case"
+                          title="Recently added integration — double-check numbers against this platform's native reporting before using them in a client deliverable."
+                        >
+                          Beta
+                        </span>
+                      )}
+                    </p>
                     <p className="text-xs font-bold text-slate-400">{formatAccountIdForDisplay(conn.platform, conn.account_id)}</p>
                   </div>
                 </div>
@@ -954,8 +976,16 @@ export const ConnectionsManager: React.FC<ConnectionsManagerProps> = ({
                 <button
                   key={p.id}
                   onClick={() => startOAuthConnection(p.id)}
-                  className="p-6 border-2 border-slate-50 hover:border-blue-600 hover:bg-blue-50/30 rounded-3xl flex flex-col items-center gap-3 transition-all text-center group"
+                  className="relative p-6 border-2 border-slate-50 hover:border-blue-600 hover:bg-blue-50/30 rounded-3xl flex flex-col items-center gap-3 transition-all text-center group"
                 >
+                  {p.newIntegration && (
+                    <span
+                      className="absolute top-2 right-2 px-2 py-0.5 rounded-full text-[10px] font-black uppercase tracking-wide bg-blue-100 text-blue-700"
+                      title="Recently added integration — double-check numbers against this platform's native reporting before using them in a client deliverable."
+                    >
+                      Beta
+                    </span>
+                  )}
                   <div className={`w-12 h-12 rounded-2xl flex items-center justify-center bg-${p.color}-50 text-${p.color}-600 group-hover:scale-110 transition-transform`}>
                     <Zap size={24} className="fill-current" />
                   </div>

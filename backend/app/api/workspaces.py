@@ -24,7 +24,6 @@ from app.api.auth import (
     get_current_user,
     Identity,
     record_audit,
-    require_role,
 )
 from app.database import get_db
 
@@ -163,7 +162,7 @@ def update_workspace(
         actor_subject=user_id,
         action="workspace.update",
         target_type="workspace",
-        target_id=workspace_id,
+        target_id=str(workspace_id),
         payload={"name": ws.name, "base_currency": ws.base_currency},
     )
     db.commit()
@@ -241,7 +240,7 @@ def create_invite(
         actor_subject=user_id,
         action="invite.create",
         target_type="invite",
-        target_id=invite.id,
+        target_id=str(invite.id),
         payload={"email": invite.email, "role": invite.role},
     )
     db.commit()
@@ -307,7 +306,7 @@ def update_member_role(
         actor_subject=user_id,
         action="member.role_change",
         target_type="membership",
-        target_id=target.id,
+        target_id=str(target.id),
         payload={"user_subject": user_subject, "from": old_role, "to": body.role},
     )
     db.commit()
@@ -348,7 +347,7 @@ def remove_member(
         actor_subject=user_id,
         action="member.remove",
         target_type="membership",
-        target_id=target.id,
+        target_id=str(target.id),
         payload={"user_subject": user_subject, "role": target.role},
     )
     db.delete(target)
@@ -427,7 +426,7 @@ def accept_invite(
         actor_subject=identity.uid,
         action="invite.accept",
         target_type="invite",
-        target_id=invite.id,
+        target_id=str(invite.id),
         payload={"role": invite.role},
     )
     db.commit()

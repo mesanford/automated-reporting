@@ -1,6 +1,5 @@
 """render_chart tool: returns a chart_spec envelope the frontend uses to
 render inline charts in the conversation."""
-import pytest
 
 
 def test_render_chart_returns_spec():

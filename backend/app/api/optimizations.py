@@ -1,6 +1,6 @@
-from fastapi import APIRouter, Depends, HTTPException, Body
+from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.orm import Session
-from typing import List, Dict, Any, Optional
+from typing import List, Optional
 from pydantic import BaseModel
 from app.database import get_db
 from app.models import OptimizationPlan, OptimizationRule, UserSettings, Connection
@@ -15,7 +15,6 @@ from app.api.auth import (
 )
 from app.api.endpoints import _try_decrypt_token, _hydrate_microsoft_customer_map
 from app.services.google_ads import execute_google_ads_optimization
-from app.services.security import decrypt_token
 
 router = APIRouter()
 
@@ -57,11 +56,11 @@ class RuleResponse(BaseModel):
         from_attributes = True
 
 class SettingsUpdate(BaseModel):
-    google_chat_webhook_url: Optional[str] = None
+    google_chat_webhook: Optional[str] = None
 
 class SettingsResponse(BaseModel):
     user_id: str
-    google_chat_webhook_url: Optional[str] = None
+    google_chat_webhook: Optional[str] = None
 
     class Config:
         from_attributes = True
@@ -80,6 +79,9 @@ async def generate_optimizations_route(
     
     if not connection:
         raise HTTPException(status_code=404, detail="Connection not found")
+    platform = connection.platform
+    if not platform:
+        raise HTTPException(status_code=400, detail="Connection has no platform configured")
 
     # Decrypt tokens
     access_token, access_err = _try_decrypt_token(connection.access_token or "")
@@ -104,8 +106,8 @@ async def generate_optimizations_route(
     all_data = []
     for account_id in accounts_to_sync:
         df = await connectors.fetch_platform_data(
-            connection.platform,
-            account_id,
+            platform,
+            str(account_id),
             access_token=access_token,
             refresh_token=refresh_token,
             microsoft_customer_id=microsoft_customer_map.get(str(account_id), ""),
@@ -123,18 +125,22 @@ async def generate_optimizations_route(
     for data in all_data:
         combined_data.extend(data)
 
-    perf_data_dict = {"platform": connection.platform, "data": combined_data}
-    
+    perf_data_dict = {"platform": platform, "data": combined_data}
+
     new_plans = generate_and_store_optimizations(
         db=db,
         user_id=user_id,
         workspace_id=workspace_id,
         connection_id=connection.id,
-        platform=connection.platform,
+        platform=platform,
         performance_data=perf_data_dict
     )
     
-    notify_new_optimizations(new_plans)
+    workspace_settings = db.query(UserSettings).filter(UserSettings.workspace_id == workspace_id).first()
+    notify_new_optimizations(
+        new_plans,
+        webhook_url=workspace_settings.google_chat_webhook if workspace_settings else None,
+    )
     
     return new_plans
 
@@ -173,7 +179,7 @@ def approve_optimization(
         actor_subject=user_id,
         action="optimization.approve",
         target_type="optimization_plan",
-        target_id=plan.id,
+        target_id=str(plan.id),
         payload={"campaign": plan.campaign_name, "change_type": plan.change_type},
     )
     db.commit()
@@ -214,9 +220,15 @@ def execute_optimization(
         if refresh_err:
             raise HTTPException(status_code=400, detail=f"Token decryption failed: {refresh_err}")
 
+        if not connection.account_id or not plan.campaign_name or not plan.change_type:
+            raise HTTPException(
+                status_code=400,
+                detail="Connection account_id, plan.campaign_name, and plan.change_type are all required to execute an optimization",
+            )
+
         # Ensure proposed_value is passed as a string
         proposed_val_str = str(plan.proposed_value)
-        
+
         success = execute_google_ads_optimization(
             customer_id=connection.account_id,
             refresh_token=refresh_token,
@@ -240,7 +252,7 @@ def execute_optimization(
         actor_subject=user_id,
         action="optimization.execute",
         target_type="optimization_plan",
-        target_id=plan.id,
+        target_id=str(plan.id),
         payload={
             "platform": connection.platform,
             "campaign": plan.campaign_name,
@@ -289,13 +301,13 @@ def get_user_settings(
 ):
     settings = db.query(UserSettings).filter(UserSettings.workspace_id == workspace_id).first()
     if not settings:
-        return {"user_id": user_id, "google_chat_webhook_url": None}
+        return {"user_id": user_id, "google_chat_webhook": None}
     return settings
 
 @router.put("/settings", response_model=SettingsResponse)
 def update_user_settings(
-    settings_update: SettingsUpdate, 
-    db: Session = Depends(get_db), 
+    settings_update: SettingsUpdate,
+    db: Session = Depends(get_db),
     user_id: str = Depends(get_current_user),
     workspace_id: int = Depends(get_current_workspace_id),
 ):
@@ -304,16 +316,14 @@ def update_user_settings(
         settings = UserSettings(
             workspace_id=workspace_id,
             user_id=user_id,
-            google_chat_webhook_url=settings_update.google_chat_webhook_url,
+            google_chat_webhook=settings_update.google_chat_webhook,
         )
         db.add(settings)
     else:
-        if settings_update.google_chat_webhook_url is not None:
-            settings.google_chat_webhook_url = settings_update.google_chat_webhook_url
+        if settings_update.google_chat_webhook is not None:
+            settings.google_chat_webhook = settings_update.google_chat_webhook
     
     db.commit()
     db.refresh(settings)
-    
-    # Also update the env var for notifications (though normally you'd read from DB, since the notification
-    # function right now reads from env, we can pass it, or we should update notifications.py to read from DB)
+
     return settings

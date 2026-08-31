@@ -1,3 +1,7 @@
+> **Archived — historical document.** This was the original pitch/concept doc for what became this project (then called "Antigravity"). It describes an early CSV-upload-based design and predates the current architecture: multi-tenant workspaces, Firebase Auth, OAuth integrations with Google Ads/Meta/LinkedIn/TikTok/Microsoft Ads, Cloud KMS envelope encryption, and Cloud Run deployment. Kept for historical reference only — do not treat as current design documentation. See README.md and OPERATIONS.md for the current architecture.
+
+---
+
 Project Overview: Antigravity
 AI-Powered Cross-Channel Ad Intelligence
 
@@ -117,7 +121,3 @@ Your frontend receives this JSON and maps the data to your components:
 * **Handling API Timeouts:** LLM calls can take 10–30 seconds to generate a full report. Browser HTTP requests might time out. You'll want to implement a loading state (spinners or skeleton loaders) on the React side. For production, you might even consider WebSockets or a polling mechanism (e.g., returning a `job_id` and having the frontend check back every 5 seconds until the report is ready).
 * **CORS (Cross-Origin Resource Sharing):** Since your React app will likely run on `localhost:3000` and FastAPI on `localhost:8000` during development, you must configure CORS middleware in FastAPI to accept requests from your frontend.
 * **Security:** Never put your Gemini API key in your React frontend code. It must live in your FastAPI backend environment variables (`.env` file) to keep it secure.
-
----
-
-Would you like me to map out how the JSON payload should be structured for a library like Recharts, or would you prefer to see a basic FastAPI endpoint that handles a multi-file upload?

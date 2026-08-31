@@ -12,11 +12,13 @@ tsconfig.tsbuildinfo
 .vscode/
 .idea/
 
-# Env files — gitignored, but we DO want them in the build context so
-# NEXT_PUBLIC_* values get inlined into the client bundle. Anything truly
-# secret stays out: NEXT_PUBLIC_* is fine to ship; nothing else lives here.
-!.env.local
-!.env.local.example
-.env
+# Env files. Production builds take their NEXT_PUBLIC_* values from the
+# committed .env.production, so that file MUST reach the build context.
+#
+# .env.local is deliberately excluded: it is a developer's local config and
+# Next.js gives it precedence over .env.production, so shipping it would let a
+# local `NEXT_PUBLIC_API_BASE_URL=http://localhost:8000` override the real API
+# URL and produce a bundle that calls the visitor's own machine.
+.env.local
+.env.local.example
 .env.development
-.env.production

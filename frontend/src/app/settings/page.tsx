@@ -118,7 +118,7 @@ const ROLES = ['admin', 'member', 'viewer'] as const;
 const PRIVILEGED_ROLES = new Set(['owner', 'admin']);
 
 export default function SettingsPage() {
-  const { active, refresh } = useWorkspace();
+  const { active } = useWorkspace();
   const [members, setMembers] = useState<Member[]>([]);
   const [schedules, setSchedules] = useState<Schedule[]>([]);
   const [rules, setRules] = useState<AlertRule[]>([]);
@@ -570,7 +570,7 @@ function InviteLinkPanel({ result }: { result: InviteResult }) {
           </p>
           <p className={`text-xs ${tone.body} mb-3`}>
             Sent via {provider}. Link expires {new Date(result.expires_at).toLocaleString()}.
-            The accept link is below as a backup if {result.email.split('@')[0]} doesn't see the email.
+            The accept link is below as a backup if {result.email.split('@')[0]} doesn&apos;t see the email.
           </p>
         </>
       ) : (

@@ -4,7 +4,7 @@ import React, { useEffect, useState } from 'react';
 import Link from 'next/link';
 import {
   Activity, ArrowLeft, Zap, FileText, RefreshCcw, Shield, Bell, DollarSign,
-  Users, UserPlus, Clock, Wrench, BarChart3, AlertTriangle,
+  Users, UserPlus, Clock, Wrench, AlertTriangle,
 } from 'lucide-react';
 import { useWorkspace } from '@/lib/workspace';
 import { apiJson } from '@/lib/api';
@@ -85,7 +85,7 @@ export default function ActivityPage() {
       }
     })();
     return () => { cancelled = true; };
-  }, [active?.id]);
+  }, [active]);
 
   return (
     <div className="min-h-screen flex flex-col bg-background text-foreground">

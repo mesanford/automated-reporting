@@ -7,7 +7,7 @@ import { ConnectionsManager } from '@/components/ConnectionsManager';
 import Link from 'next/link';
 import {
   ShieldCheck, Zap, ArrowLeft, Share2, FileText,
-  History, Calendar, Layers, Globe, MessageSquare, LogOut, Settings, Activity as ActivityIcon
+  History, Calendar, Layers, Globe, MessageSquare, LogOut, Settings, Images, Activity as ActivityIcon
 } from 'lucide-react';
 import { useAuth } from '@/lib/auth';
 import { WorkspaceSwitcher } from '@/components/WorkspaceSwitcher';
@@ -95,6 +95,8 @@ interface PlatformSummaryRow {
   conversions: number;
   revenue: number;
   roas: number;
+  impressions: number;
+  clicks: number;
 }
 
 interface SavedView {
@@ -197,6 +199,12 @@ interface DashboardData {
   topPerformer: PerformerInfo | null;
   bottomPerformer: PerformerInfo | null;
   geminiAnalysis: string;
+  /** True if any source row behind this report was fabricated demo data
+   * (currently: any connected Facebook/Instagram/LinkedIn Organic
+   * connector, which has no live API integration yet). Always show this to
+   * the user — never let fabricated numbers look indistinguishable from
+   * real ones. See docs/organic-and-ga4-integration-plan.md. */
+  usedMockData?: boolean;
 }
 
 interface ApiHistoryReport {
@@ -215,6 +223,7 @@ interface ApiHistoryReport {
   top_performer?: PerformerInfo | null;
   bottom_performer?: PerformerInfo | null;
   gemini_analysis: string;
+  used_mock_data?: boolean | number;
 }
 
 export default function Home() {
@@ -380,9 +389,26 @@ export default function Home() {
     comparisonType:      report.comparison_type        ?? 'none',
     currentPeriodLabel:  report.current_period_label   ?? '',
     priorPeriodLabel:    report.prior_period_label     ?? '',
+    usedMockData:        Boolean(report.used_mock_data),
     });
     setShowHistory(false);
   };
+
+  // Load report by ID from URL query parameters if present on load.
+  useEffect(() => {
+    if (typeof window === 'undefined') return;
+    const params = new URLSearchParams(window.location.search);
+    const reportId = params.get('report');
+    if (reportId && history.length > 0) {
+      const idNum = Number(reportId);
+      if (reportData?.id !== idNum) {
+        const found = history.find((h) => h.id === idNum);
+        if (found) {
+          selectReport(found);
+        }
+      }
+    }
+  }, [history, reportData?.id]);
 
   const reset = () => setReportData(null);
 
@@ -487,6 +513,13 @@ export default function Home() {
             >
               <FileText size={18} />
               Reports
+            </Link>
+            <Link
+              href="/creatives"
+              className="flex items-center gap-2 transition-colors hover:text-blue-600"
+            >
+              <Images size={18} />
+              Creatives
             </Link>
             <Link
               href="/activity"
@@ -800,7 +833,12 @@ function OnboardingCard({
 
   useEffect(() => {
     if (typeof window === 'undefined') return;
-    setDismissed(window.localStorage.getItem(ONBOARDING_DISMISSED_KEY) === '1');
+    const isDismissed = window.localStorage.getItem(ONBOARDING_DISMISSED_KEY) === '1';
+    if (isDismissed) {
+      setTimeout(() => {
+        setDismissed(true);
+      }, 0);
+    }
   }, []);
 
   // Returning users with reports have already onboarded — hide implicitly.

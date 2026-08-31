@@ -30,8 +30,9 @@ export default function OptimizationsPage() {
       }
       const data = await res.json()
       setOptimizations(data)
-    } catch (err: any) {
-      setError(err.message)
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      setError(msg);
     } finally {
       setLoading(false)
     }
@@ -57,8 +58,9 @@ export default function OptimizationsPage() {
 
       // Refresh the list to remove the executed item
       fetchOptimizations()
-    } catch (err: any) {
-      alert("Error: " + err.message)
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      alert("Error: " + msg);
     }
   }
 

@@ -33,6 +33,10 @@ yarn-error.log*
 # env files (can opt-in for committing if needed)
 .env*
 !.env.local.example
+# Committed on purpose: NEXT_PUBLIC_* only, all of which ships to browsers in
+# the client bundle anyway. It is what production deploys build with, so it
+# must survive a clean checkout — see the note in .env.production itself.
+!.env.production
 
 # vercel
 .vercel

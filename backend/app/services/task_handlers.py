@@ -88,3 +88,20 @@ async def touch_sync_job(payload: Dict[str, Any]) -> None:
         logger.info("touch_sync_job: stamped SyncJob %s", job_id)
     finally:
         db.close()
+
+
+@register_handler("sync_creatives")
+async def sync_creatives_handler(payload: Dict[str, Any]) -> None:
+    """Pull ad creatives for a workspace's connections into `ad_creatives`."""
+    job_id = payload.get("sync_job_id")
+    if not job_id:
+        logger.warning("sync_creatives: missing sync_job_id in payload")
+        return
+
+    from app.services.creative_sync import run_creatives_sync_for_job
+
+    connection_ids = payload.get("connection_ids") or None
+    await run_creatives_sync_for_job(
+        int(job_id),
+        [int(c) for c in connection_ids] if connection_ids else None,
+    )

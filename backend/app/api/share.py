@@ -108,7 +108,7 @@ def create_share_link(
         actor_subject=user_id,
         action="share.create",
         target_type="report_share_link",
-        target_id=link.id,
+        target_id=str(link.id),
         payload={"report_id": report_id, "expires_in_days": body.expires_in_days},
     )
     db.commit()

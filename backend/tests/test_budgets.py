@@ -1,6 +1,6 @@
 """Budget pacing: CRUD, role gating, math, and sync-time alert firing
 (once per period, deduped via last_alert_period)."""
-from datetime import datetime, timedelta
+from datetime import datetime
 
 import pytest
 

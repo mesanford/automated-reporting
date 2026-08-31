@@ -70,6 +70,9 @@ async def run_sync(
     )
     if not connection:
         raise SyncError("Connection not found")
+    platform = connection.platform
+    if not platform:
+        raise SyncError(f"Connection {connection_id} has no platform configured")
 
     comparison_requested = bool(comparison_start_date and comparison_end_date)
 
@@ -86,7 +89,7 @@ async def run_sync(
     access_token = _try_decrypt(connection.access_token or "")
     refresh_token = _try_decrypt(connection.refresh_token or "")
 
-    if connection.platform == "microsoft" and accounts_to_sync:
+    if platform == "microsoft" and accounts_to_sync:
         microsoft_customer_map = await _hydrate_microsoft_customer_map(
             connection=connection,
             accounts_to_check=[str(a) for a in accounts_to_sync],
@@ -113,8 +116,8 @@ async def run_sync(
     try:
         for account_id in accounts_to_sync:
             df = await connectors.fetch_platform_data(
-                connection.platform,
-                account_id,
+                platform,
+                str(account_id),
                 access_token=access_token,
                 refresh_token=refresh_token,
                 microsoft_customer_id=microsoft_customer_map.get(str(account_id), ""),
@@ -126,8 +129,8 @@ async def run_sync(
 
             if comparison_requested:
                 comparison_df = await connectors.fetch_platform_data(
-                    connection.platform,
-                    account_id,
+                    platform,
+                    str(account_id),
                     access_token=access_token,
                     refresh_token=refresh_token,
                     microsoft_customer_id=microsoft_customer_map.get(str(account_id), ""),
@@ -140,7 +143,7 @@ async def run_sync(
         raise
     except Exception as exc:  # noqa: BLE001
         raise SyncError(
-            f"Sync failed for {connection.platform} (connection {connection_id}): {exc}"
+            f"Sync failed for {platform} (connection {connection_id}): {exc}"
         )
 
     if not dataframes:
@@ -172,6 +175,7 @@ async def run_sync(
         top_performer=aggregated["topPerformer"],
         bottom_performer=aggregated["bottomPerformer"],
         gemini_analysis=analysis,
+        used_mock_data=1 if aggregated.get("usedMockData") else 0,
     )
     db.add(new_report)
     db.commit()
@@ -210,6 +214,7 @@ async def run_sync(
         "topPerformer": aggregated["topPerformer"],
         "bottomPerformer": aggregated["bottomPerformer"],
         "geminiAnalysis": analysis,
+        "usedMockData": aggregated.get("usedMockData", False),
     }
 
 
@@ -253,6 +258,15 @@ async def run_sync_all(
     seen: set[tuple[str, str]] = set()
 
     for conn in connections:
+        conn_platform = conn.platform
+        if not conn_platform:
+            skipped.append({
+                "connectionId": conn.id,
+                "platform": conn.platform,
+                "reason": "Connection has no platform configured.",
+            })
+            continue
+
         selected_account_ids = conn.selected_account_ids or []
         accounts_to_sync = (
             selected_account_ids if selected_account_ids else [conn.account_id]
@@ -264,7 +278,7 @@ async def run_sync_all(
         access_token = _try_decrypt(conn.access_token or "")
         refresh_token = _try_decrypt(conn.refresh_token or "")
 
-        if conn.platform == "microsoft" and accounts_to_sync:
+        if conn_platform == "microsoft" and accounts_to_sync:
             microsoft_customer_map = await _hydrate_microsoft_customer_map(
                 connection=conn,
                 accounts_to_check=[str(a) for a in accounts_to_sync],
@@ -289,14 +303,14 @@ async def run_sync_all(
         connection_had_data = False
         try:
             for account_id in accounts_to_sync:
-                signature = (conn.platform.lower(), str(account_id))
+                signature = (conn_platform.lower(), str(account_id))
                 if signature in seen:
                     continue
                 seen.add(signature)
 
                 df = await connectors.fetch_platform_data(
-                    conn.platform,
-                    account_id,
+                    conn_platform,
+                    str(account_id),
                     access_token=access_token,
                     refresh_token=refresh_token,
                     microsoft_customer_id=microsoft_customer_map.get(str(account_id), ""),
@@ -310,8 +324,8 @@ async def run_sync_all(
 
                 if comparison_requested:
                     comparison_df = await connectors.fetch_platform_data(
-                        conn.platform,
-                        account_id,
+                        conn_platform,
+                        str(account_id),
                         access_token=access_token,
                         refresh_token=refresh_token,
                         microsoft_customer_id=microsoft_customer_map.get(str(account_id), ""),
@@ -324,7 +338,7 @@ async def run_sync_all(
             raise
         except Exception as exc:  # noqa: BLE001
             raise SyncError(
-                f"Sync failed for {conn.platform} (connection {conn.id}): {exc}"
+                f"Sync failed for {conn_platform} (connection {conn.id}): {exc}"
             )
 
         if not connection_had_data:
@@ -365,6 +379,7 @@ async def run_sync_all(
         top_performer=aggregated["topPerformer"],
         bottom_performer=aggregated["bottomPerformer"],
         gemini_analysis=analysis,
+        used_mock_data=1 if aggregated.get("usedMockData") else 0,
     )
     db.add(new_report)
     db.commit()
@@ -404,6 +419,7 @@ async def run_sync_all(
         "topPerformer": aggregated["topPerformer"],
         "bottomPerformer": aggregated["bottomPerformer"],
         "geminiAnalysis": analysis,
+        "usedMockData": aggregated.get("usedMockData", False),
     }
 
 
@@ -430,6 +446,8 @@ async def run_sync_all_for_job(
         db.commit()
 
         try:
+            if not job.user_id:
+                raise SyncError(f"SyncJob {job_id} has no user_id")
             result = await run_sync_all(
                 db=db,
                 workspace_id=job.workspace_id,
@@ -484,6 +502,10 @@ async def run_sync_for_job(
         db.commit()
 
         try:
+            if not job.user_id:
+                raise SyncError(f"SyncJob {job_id} has no user_id")
+            if job.connection_id is None:
+                raise SyncError(f"SyncJob {job_id} has no connection_id")
             result = await run_sync(
                 db=db,
                 workspace_id=job.workspace_id,

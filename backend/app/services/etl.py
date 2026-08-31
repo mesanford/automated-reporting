@@ -1,9 +1,28 @@
 import pandas as pd
+import numpy as np
 import io
-from typing import List, Dict, Optional, Tuple
+from typing import Any, List, Dict, Optional, Tuple
+
+
+def _to_native(value: Any) -> Any:
+    """Recursively convert numpy scalar types to native Python types.
+
+    `DataFrame.to_dict(orient='records')` and `.sum()`/`.idxmin()` lookups
+    leave numpy.int64/float64 in the resulting dicts. Those aren't JSON
+    serializable by FastAPI's default encoder, so anything built from a
+    DataFrame and returned over the API must pass through this first.
+    """
+    if isinstance(value, dict):
+        return {k: _to_native(v) for k, v in value.items()}
+    if isinstance(value, (list, tuple)):
+        return [_to_native(v) for v in value]
+    if isinstance(value, np.generic):
+        return value.item()
+    return value
 
 UNIVERSAL_COLUMNS = [
-    'date', 'platform', 'campaign', 'ad_group', 'ad_asset', 'spend', 'impressions', 'clicks', 'conversions', 'revenue'
+    'date', 'platform', 'campaign', 'ad_group', 'ad_asset', 'spend', 'impressions', 'clicks', 'conversions', 'revenue',
+    'organic_reach', 'organic_engagements', 'organic_shares', 'ga_sessions'
 ]
 
 # Platform-specific column mappings to the Universal Schema.
@@ -44,6 +63,36 @@ PLATFORM_MAPPINGS = {
         'Clicks': 'clicks',
         'Conversions': 'conversions',
         'Total Revenue': 'revenue',
+    },
+    'facebook_organic': {
+        'Date': 'date',
+        'Post Message': 'campaign',
+        'Post Reach': 'organic_reach',
+        'Post Engagement': 'organic_engagements',
+        'Post Shares': 'organic_shares',
+        'GA Sessions': 'ga_sessions',
+        'GA Conversions': 'conversions',
+        'GA Revenue': 'revenue',
+    },
+    'instagram_organic': {
+        'Date': 'date',
+        'Caption': 'campaign',
+        'Reach': 'organic_reach',
+        'Engagement': 'organic_engagements',
+        'Shares': 'organic_shares',
+        'GA Sessions': 'ga_sessions',
+        'GA Conversions': 'conversions',
+        'GA Revenue': 'revenue',
+    },
+    'linkedin_organic': {
+        'Date': 'date',
+        'Post Content': 'campaign',
+        'Impressions': 'organic_reach',
+        'Clicks': 'organic_engagements',
+        'Shares': 'organic_shares',
+        'GA Sessions': 'ga_sessions',
+        'GA Conversions': 'conversions',
+        'GA Revenue': 'revenue',
     },
 }
 
@@ -117,13 +166,19 @@ def process_csv(file_content: bytes, filename: str) -> pd.DataFrame:
     if ad_asset_source:
         df['ad_asset'] = df[ad_asset_source]
 
+    # Map organic reach/engagements to impressions/clicks if they are present
+    if 'organic_reach' in df.columns:
+        df['impressions'] = df['organic_reach']
+    if 'organic_engagements' in df.columns:
+        df['clicks'] = df['organic_engagements']
+
     for col in UNIVERSAL_COLUMNS:
         if col not in df.columns:
             df[col] = '' if col in ('campaign', 'ad_group', 'ad_asset', 'date', 'platform') else 0
 
     df['date'] = pd.to_datetime(df['date']).dt.strftime('%Y-%m-%d')
 
-    for col in ['spend', 'impressions', 'clicks', 'conversions', 'revenue']:
+    for col in ['spend', 'impressions', 'clicks', 'conversions', 'revenue', 'organic_reach', 'organic_engagements', 'organic_shares', 'ga_sessions']:
         df[col] = pd.to_numeric(df[col], errors='coerce').fillna(0)
 
     for col in ['campaign', 'ad_group', 'ad_asset']:
@@ -141,6 +196,17 @@ def _compute_derived_metrics(df: pd.DataFrame) -> pd.DataFrame:
     df['cpm']  = df.apply(lambda r: _safe_divide(r['spend'],        r['impressions']) * 1000, axis=1)
     df['cpa']  = df.apply(lambda r: _safe_divide(r['spend'],        r['conversions']),         axis=1)
     df['roas'] = df.apply(lambda r: _safe_divide(r['revenue'],      r['spend']),               axis=1)
+    
+    # Calculate organic engagement rate
+    if 'organic_reach' in df.columns:
+        df['engagement_rate'] = df.apply(
+            lambda r: _safe_divide(r['organic_engagements'], r['organic_reach']) * 100 
+            if r['organic_reach'] > 0 else _safe_divide(r['clicks'], r['impressions']) * 100, 
+            axis=1
+        )
+    else:
+        df['engagement_rate'] = df.apply(lambda r: _safe_divide(r['clicks'], r['impressions']) * 100, axis=1)
+        
     return df
 
 
@@ -365,9 +431,20 @@ def aggregate_data(
             "topPerformer": None,
             "bottomPerformer": None,
             "geminiInput": {},
+            "usedMockData": False,
         }
 
     combined_df = pd.concat(dataframes, ignore_index=True).fillna(0)
+
+    # `_is_mock_data` is set by connectors.py on fabricated (demo-mode) rows,
+    # e.g. today's organic-channel connectors before real API calls are
+    # implemented. Surface it as a top-level flag so callers can warn users
+    # rather than presenting fake numbers as real — then drop the column so
+    # it never leaks into UNIVERSAL_COLUMNS-based aggregation downstream.
+    used_mock_data = bool(combined_df.get("_is_mock_data", pd.Series(dtype=bool)).any())
+    if "_is_mock_data" in combined_df.columns:
+        combined_df = combined_df.drop(columns=["_is_mock_data"])
+
     for col in UNIVERSAL_COLUMNS:
         if col not in combined_df.columns:
             combined_df[col] = 0
@@ -449,6 +526,10 @@ def aggregate_data(
         spend=('spend', 'sum'), impressions=('impressions', 'sum'),
         clicks=('clicks', 'sum'), conversions=('conversions', 'sum'),
         revenue=('revenue', 'sum'),
+        organic_reach=('organic_reach', 'sum'),
+        organic_engagements=('organic_engagements', 'sum'),
+        organic_shares=('organic_shares', 'sum'),
+        ga_sessions=('ga_sessions', 'sum'),
     ).reset_index()
     daily = _compute_derived_metrics(daily)
 
@@ -458,12 +539,12 @@ def aggregate_data(
         return pt
 
     chart_df = _pivot_metric('spend')
-    for m in ('cpa', 'ctr', 'roas', 'revenue'):
+    for m in ('cpa', 'ctr', 'roas', 'revenue', 'conversions', 'impressions'):
         chart_df = chart_df.merge(_pivot_metric(m), on='date', how='left')
 
-    all_platforms = ['google', 'meta', 'linkedin', 'tiktok', 'microsoft']
+    all_platforms = ['google', 'meta', 'linkedin', 'tiktok', 'microsoft', 'facebook_organic', 'instagram_organic', 'linkedin_organic', 'google_analytics']
     for p in all_platforms:
-        for suffix in ('_spend', '_cpa', '_ctr', '_roas', '_revenue'):
+        for suffix in ('_spend', '_cpa', '_ctr', '_roas', '_revenue', '_conversions', '_impressions'):
             col = f"{p}{suffix}"
             if col not in chart_df.columns:
                 chart_df[col] = 0
@@ -475,6 +556,10 @@ def aggregate_data(
         spend=('spend', 'sum'), impressions=('impressions', 'sum'),
         clicks=('clicks', 'sum'), conversions=('conversions', 'sum'),
         revenue=('revenue', 'sum'),
+        organic_reach=('organic_reach', 'sum'),
+        organic_engagements=('organic_engagements', 'sum'),
+        organic_shares=('organic_shares', 'sum'),
+        ga_sessions=('ga_sessions', 'sum'),
     ).reset_index()
     plat_agg = _compute_derived_metrics(plat_agg)
     plat_agg['spend_share'] = plat_agg['spend'].apply(
@@ -492,6 +577,10 @@ def aggregate_data(
         spend=('spend', 'sum'), impressions=('impressions', 'sum'),
         clicks=('clicks', 'sum'), conversions=('conversions', 'sum'),
         revenue=('revenue', 'sum'),
+        organic_reach=('organic_reach', 'sum'),
+        organic_engagements=('organic_engagements', 'sum'),
+        organic_shares=('organic_shares', 'sum'),
+        ga_sessions=('ga_sessions', 'sum'),
     ).reset_index()
     camp_agg = _compute_derived_metrics(camp_agg)
     camp_agg['spend_share'] = camp_agg['spend'].apply(
@@ -538,7 +627,8 @@ def aggregate_data(
         "platform_summary": [
             {k: v for k, v in row.items()
              if k in ('platform', 'spend', 'revenue', 'impressions', 'clicks', 'conversions',
-                      'cpa', 'ctr', 'cvr', 'cpc', 'roas', 'spend_share')}
+                      'cpa', 'ctr', 'cvr', 'cpc', 'roas', 'spend_share',
+                      'organic_reach', 'organic_engagements', 'organic_shares', 'ga_sessions', 'engagement_rate')}
             for row in platform_summary
         ],
         "platform_deltas":    platform_deltas,
@@ -552,7 +642,7 @@ def aggregate_data(
         },
     }
 
-    return {
+    return _to_native({
         "chartData":          chart_data,
         "scorecards":         scorecards,
         "scorecardDeltas":    scorecard_deltas,
@@ -566,4 +656,5 @@ def aggregate_data(
         "topPerformer":       top_performer,
         "bottomPerformer":    bottom_performer,
         "geminiInput":        gemini_input,
-    }
+        "usedMockData":       used_mock_data,
+    })

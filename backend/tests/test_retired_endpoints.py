@@ -9,9 +9,7 @@ The legacy /login is still alive when `ALLOW_DEV_AUTH=1` because the dev
 flow has no Bearer token to exchange, but it must 410 outside dev so
 real Firebase deploys can't accidentally rely on it.
 """
-import os
 
-import pytest
 
 from tests.conftest import auth_headers
 

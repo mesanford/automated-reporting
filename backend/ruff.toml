@@ -1,0 +1,19 @@
+# Ruff configuration for CI linting.
+#
+# Rule set: pyflakes (F) + pycodestyle errors (E), Ruff's default. This
+# catches real bugs (unused/undefined names, unused imports) without
+# imposing a full style rewrite on existing code.
+target-version = "py310"
+
+[lint]
+# E701 (compact `if x: y` single-line statements) is used deliberately and
+# consistently for terse PATCH-style partial-update handlers (e.g.
+# app/api/alerts.py's `if body.field is not None: obj.field = body.field`
+# blocks) — treated as accepted style rather than a violation.
+ignore = ["E701"]
+
+[lint.per-file-ignores]
+# main.py deliberately calls configure_observability() before importing
+# app.api/app.services so logging is set up before those modules run any
+# module-level code. That ordering requires imports below the top of file.
+"main.py" = ["E402"]

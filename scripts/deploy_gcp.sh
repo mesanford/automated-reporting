@@ -99,7 +99,9 @@ require_cmd() {
 
 run() {
   if [[ "$DRY_RUN" == "1" ]]; then
-    echo "  ${c_grey}\$${c_reset} $*"
+    # To stderr: many call sites are `run ... >/dev/null` to mute real output,
+    # which would otherwise swallow the very command a dry run exists to show.
+    echo "  ${c_grey}\$${c_reset} $*" >&2
   else
     "$@"
   fi
@@ -109,7 +111,7 @@ run() {
 # and downgrade non-zero to a warning instead of aborting.
 run_idempotent() {
   if [[ "$DRY_RUN" == "1" ]]; then
-    echo "  ${c_grey}\$${c_reset} $* ${c_grey}(idempotent)${c_reset}"
+    echo "  ${c_grey}\$${c_reset} $* ${c_grey}(idempotent)${c_reset}" >&2
     return 0
   fi
   if "$@" 2> >(tee /tmp/.gcdeploy.err >&2); then
@@ -243,6 +245,11 @@ if ! skipped kms; then
   ok "KMS key: $KMS_KEY_FULL"
 fi
 
+bucket_exists() {
+  [[ "$DRY_RUN" == "1" ]] && return 0
+  gcloud storage buckets describe "gs://$1" --project "$PROJECT_ID" >/dev/null 2>&1
+}
+
 # ── PHASE 4: IAM ───────────────────────────────────────────────────────────
 
 if ! skipped iam; then
@@ -265,6 +272,20 @@ if ! skipped iam; then
       --member "serviceAccount:${RUNTIME_SA_EMAIL}" \
       --role "$role" --condition=None >/dev/null
   done
+
+  # Ad-creative assets are mirrored into a bucket, so the runtime SA needs
+  # object access. Bound on the bucket rather than project-wide: this project
+  # is shared with other apps, and a project-level storage role would hand the
+  # API service their objects too.
+  if [[ -n "${CREATIVES_BUCKET:-}" ]] || bucket_exists "${PROJECT_ID}.firebasestorage.app"; then
+    creatives_bucket="${CREATIVES_BUCKET:-${PROJECT_ID}.firebasestorage.app}"
+    run gcloud storage buckets add-iam-policy-binding "gs://${creatives_bucket}" \
+      --member "serviceAccount:${RUNTIME_SA_EMAIL}" \
+      --role roles/storage.objectAdmin --project "$PROJECT_ID" >/dev/null
+    ok "creative asset bucket: gs://${creatives_bucket} → objectAdmin"
+  else
+    note "no creatives bucket found; ad-creative assets will not be mirrored until one exists"
+  fi
 
   ok "IAM bindings applied (invoker SA gets run.invoker after deploy)"
 fi

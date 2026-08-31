@@ -6,7 +6,7 @@ import {
   FileText, ArrowLeft, Zap, Filter, TrendingUp, Search, Download,
 } from 'lucide-react';
 import { useWorkspace } from '@/lib/workspace';
-import { apiFetch, apiJson, API_BASE } from '@/lib/api';
+import { apiFetch, apiJson } from '@/lib/api';
 
 interface ReportListRow {
   id: number;
@@ -47,7 +47,7 @@ export default function ReportsListPage() {
       }
     })();
     return () => { cancelled = true; };
-  }, [active?.id]);
+  }, [active]);
 
   const filtered = useMemo(() => {
     const f = from ? new Date(from).getTime() : 0;

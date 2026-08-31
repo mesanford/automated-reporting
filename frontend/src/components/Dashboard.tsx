@@ -16,20 +16,39 @@ import { CampaignTable } from './CampaignTable';
 
 // ── Constants ──────────────────────────────────────────────────────────────────
 const PLATFORM_COLORS: Record<string, string> = {
-  google:    '#3b82f6',
-  meta:      '#818cf8',
-  linkedin:  '#0a66c2',
-  tiktok:    '#ff0050',
-  microsoft: '#10b981',
+  google:            '#3b82f6',
+  meta:              '#818cf8',
+  linkedin:          '#0a66c2',
+  tiktok:            '#ff0050',
+  microsoft:         '#10b981',
+  facebook_organic:  '#1877f2',
+  instagram_organic: '#e1306c',
+  linkedin_organic:  '#0077b5',
+  google_analytics:  '#f9ab00',
 };
-const PLATFORMS = ['google', 'meta', 'linkedin', 'tiktok', 'microsoft'];
+const PLATFORMS = [
+  'google', 'meta', 'linkedin', 'tiktok', 'microsoft',
+  'facebook_organic', 'instagram_organic', 'linkedin_organic', 'google_analytics'
+];
 const PLATFORM_DISPLAY: Record<string, string> = {
-  google:    'Google Ads',
-  meta:      'Meta Ads',
-  linkedin:  'LinkedIn',
-  tiktok:    'TikTok',
-  microsoft: 'Microsoft Ads',
+  google:            'Google Ads',
+  meta:              'Meta Ads',
+  linkedin:          'LinkedIn Ads',
+  tiktok:            'TikTok Ads',
+  microsoft:         'Microsoft Ads',
+  facebook_organic:  'Facebook Organic',
+  instagram_organic: 'Instagram Organic',
+  linkedin_organic:  'LinkedIn Organic',
+  google_analytics:  'Google Analytics (GA4)',
 };
+// GA4 has no "spend" concept — its sessions are organic by construction
+// (see connectors.py GA4_ORGANIC_CHANNEL_GROUPS), so it belongs in the
+// same "organic" bucket as the social organic connectors even though its
+// platform id doesn't contain the substring "organic".
+const ORGANIC_PLATFORM_IDS = new Set([
+  'facebook_organic', 'instagram_organic', 'linkedin_organic', 'google_analytics',
+]);
+const isOrganicPlatform = (platform: string) => ORGANIC_PLATFORM_IDS.has(platform);
 const ChartTooltipStyle = {
   borderRadius: '16px', border: 'none',
   boxShadow: '0 10px 15px -3px rgb(0 0 0 / 0.1)', backgroundColor: '#fff',
@@ -73,6 +92,8 @@ interface PlatformSummaryRow {
   conversions: number;
   revenue: number;
   roas: number;
+  impressions: number;
+  clicks: number;
 }
 interface HierarchySummaryRow {
   level: string;
@@ -108,6 +129,13 @@ interface KpiCardProps {
   delta?: Delta;
   deltaLabel?: string;
 }
+interface OrganicFields {
+  organic_reach?: number;
+  organic_engagements?: number;
+  organic_shares?: number;
+  ga_sessions?: number;
+  engagement_rate?: number;
+}
 export interface KpiCustomEntry {
   id: number;
   name: string;
@@ -138,6 +166,7 @@ interface DashboardProps {
     topPerformer: PerformerInfo | null;
     bottomPerformer: PerformerInfo | null;
     geminiAnalysis: string;
+    usedMockData?: boolean;
   };
 }
 
@@ -249,6 +278,25 @@ const PerformerCard = ({ performer, type }: { performer: PerformerInfo; type: 't
 
 const PlatformCard = ({ plat, deltas, deltaLabel }: { plat: PlatformSummaryRow; deltas: PlatformDelta; deltaLabel: string }) => {
   const color = PLATFORM_COLORS[plat.platform] || '#94a3b8';
+  const isOrganic = isOrganicPlatform(plat.platform);
+  const platRaw = plat as unknown as OrganicFields;
+
+  const metrics = isOrganic ? [
+    { label: 'Organic Reach', value: (platRaw.organic_reach ?? plat.impressions ?? 0).toLocaleString() },
+    { label: 'Engagements', value: (platRaw.organic_engagements ?? plat.clicks ?? 0).toLocaleString() },
+    { label: 'Engagement Rate', value: `${(platRaw.engagement_rate ?? 0).toFixed(2)}%` },
+    { label: 'GA Sessions', value: (platRaw.ga_sessions ?? 0).toLocaleString() },
+    { label: 'Conversions', value: String(plat.conversions ?? 0), delta: deltas.conversions },
+    { label: 'Shares', value: (platRaw.organic_shares ?? 0).toLocaleString() },
+  ] : [
+    { label: 'Spend', value: `$${(plat.spend ?? 0).toLocaleString(undefined, { maximumFractionDigits: 0 })}`, delta: deltas.spend },
+    { label: 'Conv. Value', value: `$${(plat.revenue ?? 0).toLocaleString(undefined, { maximumFractionDigits: 0 })}`, delta: deltas.revenue },
+    { label: 'ROAS', value: `${(plat.roas ?? 0).toFixed(2)}x`, delta: deltas.blendedROAS },
+    { label: 'CPA',   value: `$${(plat.cpa ?? 0).toFixed(2)}`,                                               delta: deltas.cpa ?? deltas.blendedCPA },
+    { label: 'CTR',   value: `${(plat.ctr ?? 0).toFixed(2)}%`,                                               delta: deltas.ctr ?? deltas.blendedCTR },
+    { label: 'Conv.', value: String(plat.conversions ?? 0),                                                   delta: deltas.conversions },
+  ];
+
   return (
     <div className="bg-background p-6 rounded-[2rem] border border-slate-100 shadow-sm">
       <div className="flex items-center gap-2 mb-4">
@@ -256,18 +304,11 @@ const PlatformCard = ({ plat, deltas, deltaLabel }: { plat: PlatformSummaryRow; 
         <h4 className="text-sm font-black text-slate-700">{PLATFORM_DISPLAY[plat.platform] || plat.platform}</h4>
       </div>
       <div className="grid grid-cols-2 gap-3">
-        {[
-          { label: 'Spend', value: `$${(plat.spend ?? 0).toLocaleString(undefined, { maximumFractionDigits: 0 })}`, delta: deltas.spend },
-          { label: 'Conv. Value', value: `$${(plat.revenue ?? 0).toLocaleString(undefined, { maximumFractionDigits: 0 })}`, delta: deltas.revenue },
-          { label: 'ROAS', value: `${(plat.roas ?? 0).toFixed(2)}x`, delta: deltas.blendedROAS },
-          { label: 'CPA',   value: `$${(plat.cpa ?? 0).toFixed(2)}`,                                               delta: deltas.cpa ?? deltas.blendedCPA },
-          { label: 'CTR',   value: `${(plat.ctr ?? 0).toFixed(2)}%`,                                               delta: deltas.ctr ?? deltas.blendedCTR },
-          { label: 'Conv.', value: String(plat.conversions ?? 0),                                                   delta: deltas.conversions },
-        ].map(({ label, value, delta }) => (
+        {metrics.map(({ label, value, delta }) => (
           <div key={label} className="bg-slate-50 rounded-xl p-3">
             <p className="text-[10px] font-bold text-slate-400 uppercase tracking-wide mb-1">{label}</p>
             <p className="text-sm font-black text-slate-800">{value}</p>
-            <DeltaBadge delta={delta} label={deltaLabel} />
+            {delta && <DeltaBadge delta={delta} label={deltaLabel} />}
           </div>
         ))}
       </div>
@@ -277,16 +318,103 @@ const PlatformCard = ({ plat, deltas, deltaLabel }: { plat: PlatformSummaryRow; 
 
 export const Dashboard: React.FC<DashboardProps> = ({ data, customKpis = [], baseCurrency = 'USD' }) => {
   const {
-    chartData, scorecards, scorecardDeltas = {},
+    chartData, scorecardDeltas = {},
     platformDeltas = {}, comparisonType = 'none',
     currentPeriodLabel = '', priorPeriodLabel = '',
     campaignSummary, hierarchySummary = { campaign: [], adGroup: [], adAsset: [] }, platformSummary = [],
-    topPerformer, bottomPerformer, geminiAnalysis,
+    topPerformer, bottomPerformer, geminiAnalysis, usedMockData = false,
   } = data;
 
   const dashboardRef = useRef<HTMLDivElement>(null);
   const [viewMode, setViewMode] = useState<'analyst' | 'exec'>('analyst');
   const [hierarchyLevel, setHierarchyLevel] = useState<'campaign' | 'adGroup' | 'adAsset'>('campaign');
+  const [channelFilter, setChannelFilter] = useState<'all' | 'paid' | 'organic'>('all');
+
+  const filteredPlatformSummary = useMemo(() => {
+    return platformSummary.filter(p => {
+      const isOrganic = isOrganicPlatform(p.platform);
+      if (channelFilter === 'paid') return !isOrganic;
+      if (channelFilter === 'organic') return isOrganic;
+      return true;
+    });
+  }, [platformSummary, channelFilter]);
+
+  const filteredCampaignSummary = useMemo(() => {
+    return campaignSummary.filter(c => {
+      const isOrganic = isOrganicPlatform(c.platform);
+      if (channelFilter === 'paid') return !isOrganic;
+      if (channelFilter === 'organic') return isOrganic;
+      return true;
+    });
+  }, [campaignSummary, channelFilter]);
+
+  const filteredHierarchySummary = useMemo(() => {
+    const filterList = (list: HierarchySummaryRow[]) => {
+      return (list || []).filter(item => {
+        const isOrganic = isOrganicPlatform(item.platform);
+        if (channelFilter === 'paid') return !isOrganic;
+        if (channelFilter === 'organic') return isOrganic;
+        return true;
+      });
+    };
+    return {
+      campaign: filterList(hierarchySummary.campaign),
+      adGroup: filterList(hierarchySummary.adGroup),
+      adAsset: filterList(hierarchySummary.adAsset),
+    };
+  }, [hierarchySummary, channelFilter]);
+
+  const filteredScorecards = useMemo(() => {
+    const res = {
+      totalSpend: 0,
+      totalImpressions: 0,
+      totalClicks: 0,
+      totalConversions: 0,
+      totalRevenue: 0,
+      blendedCPA: 0,
+      blendedCTR: 0,
+      blendedCVR: 0,
+      blendedCPC: 0,
+      blendedCPM: 0,
+      blendedROAS: null as number | null,
+      totalReach: 0,
+      totalEngagements: 0,
+      totalShares: 0,
+      totalSessions: 0,
+      engagementRate: 0,
+    };
+
+    filteredPlatformSummary.forEach(p => {
+      res.totalSpend += p.spend ?? 0;
+      res.totalImpressions += p.impressions ?? 0;
+      res.totalClicks += p.clicks ?? 0;
+      res.totalConversions += p.conversions ?? 0;
+      res.totalRevenue += p.revenue ?? 0;
+      
+      const pRaw = p as unknown as OrganicFields;
+      res.totalReach += pRaw.organic_reach ?? 0;
+      res.totalEngagements += pRaw.organic_engagements ?? 0;
+      res.totalShares += pRaw.organic_shares ?? 0;
+      res.totalSessions += pRaw.ga_sessions ?? 0;
+    });
+
+    if (channelFilter === 'organic' && res.totalReach === 0) {
+      res.totalReach = res.totalImpressions;
+      res.totalEngagements = res.totalClicks;
+    }
+
+    const safeDivide = (num: number, den: number) => den > 0 ? num / den : 0;
+    res.blendedCPA = safeDivide(res.totalSpend, res.totalConversions);
+    res.blendedCTR = safeDivide(res.totalClicks, res.totalImpressions) * 100;
+    res.blendedCVR = safeDivide(res.totalConversions, res.totalClicks) * 100;
+    res.blendedCPC = safeDivide(res.totalSpend, res.totalClicks);
+    res.blendedCPM = safeDivide(res.totalSpend, res.totalImpressions) * 1000;
+    res.blendedROAS = res.totalRevenue > 0 && res.totalSpend > 0 ? safeDivide(res.totalRevenue, res.totalSpend) : null;
+    res.engagementRate = safeDivide(res.totalEngagements, res.totalReach) * 100;
+
+    return res;
+  }, [filteredPlatformSummary, channelFilter]);
+
   const deltaLabel =
     comparisonType === 'year_over_year'     ? 'YoY' :
     comparisonType === 'period_over_period' ? 'PoP' :
@@ -321,7 +449,7 @@ export const Dashboard: React.FC<DashboardProps> = ({ data, customKpis = [], bas
       .filter((d) => d.delta.direction === 'negative')
       .sort((a, b) => b.magnitude - a.magnitude)[0];
 
-    const cpaPlatforms = [...platformSummary]
+    const cpaPlatforms = [...filteredPlatformSummary]
       .filter((p) => p.conversions > 0)
       .sort((a, b) => a.cpa - b.cpa);
     const bestPlat = cpaPlatforms[0];
@@ -349,7 +477,7 @@ export const Dashboard: React.FC<DashboardProps> = ({ data, customKpis = [], bas
       recommendation,
       labels,
     };
-  }, [scorecardDeltas, platformSummary]);
+  }, [scorecardDeltas, filteredPlatformSummary]);
 
 
   const exportToPDF = async () => {
@@ -448,27 +576,29 @@ export const Dashboard: React.FC<DashboardProps> = ({ data, customKpis = [], bas
   };
 
   const activePlatforms = PLATFORMS.filter(p =>
-    platformSummary.some((ps) => ps.platform === p)
+    filteredPlatformSummary.some((ps) => ps.platform === p)
   );
 
-  const efficiencyData = [...platformSummary]
+  const isOrganicOnly = channelFilter === 'organic';
+
+  const efficiencyData = [...filteredPlatformSummary]
     .filter((p) => p.conversions > 0)
-    .sort((a, b) => a.cpa - b.cpa)
+    .sort((a, b) => isOrganicOnly ? b.conversions - a.conversions : a.cpa - b.cpa)
     .map((p) => ({
       platform: PLATFORM_DISPLAY[p.platform] || p.platform,
-      cpa: Number(p.cpa.toFixed(2)),
+      value: isOrganicOnly ? p.conversions : Number(p.cpa.toFixed(2)),
       fill: PLATFORM_COLORS[p.platform] || '#94a3b8',
     }));
 
-  const spendShareData = platformSummary
-    .filter((p) => p.spend > 0)
+  const pieShareData = filteredPlatformSummary
+    .filter((p) => isOrganicOnly ? p.impressions > 0 : p.spend > 0)
     .map((p) => ({
       name: PLATFORM_DISPLAY[p.platform] || p.platform,
-      value: p.spend,
+      value: isOrganicOnly ? p.impressions : p.spend,
       fill: PLATFORM_COLORS[p.platform] || '#94a3b8',
     }));
 
-  const campaignFallbackHierarchy: HierarchySummaryRow[] = campaignSummary.map((r) => ({
+  const campaignFallbackHierarchy: HierarchySummaryRow[] = filteredCampaignSummary.map((r) => ({
     level: 'campaign',
     platform: r.platform,
     name: r.campaign,
@@ -486,8 +616,8 @@ export const Dashboard: React.FC<DashboardProps> = ({ data, customKpis = [], bas
   }));
 
   const activeHierarchyRows = hierarchyLevel === 'campaign'
-    ? (hierarchySummary.campaign.length > 0 ? hierarchySummary.campaign : campaignFallbackHierarchy)
-    : (hierarchySummary[hierarchyLevel] ?? []);
+    ? (filteredHierarchySummary.campaign.length > 0 ? filteredHierarchySummary.campaign : campaignFallbackHierarchy)
+    : (filteredHierarchySummary[hierarchyLevel] ?? []);
   const hierarchyByPlatform = activeHierarchyRows.reduce<Record<string, HierarchySummaryRow[]>>((acc, row) => {
     if (!acc[row.platform]) acc[row.platform] = [];
     acc[row.platform].push(row);
@@ -497,23 +627,52 @@ export const Dashboard: React.FC<DashboardProps> = ({ data, customKpis = [], bas
   return (
     <div className="animate-in fade-in slide-in-from-bottom-4 duration-700">
       <div className="flex flex-col md:flex-row md:items-center justify-between mb-6 gap-3">
-        <div className="inline-flex bg-background border border-slate-200 rounded-xl p-1 shadow-sm">
-          <button
-            onClick={() => setViewMode('exec')}
-            className={`h-9 px-4 rounded-lg text-xs font-black uppercase tracking-wider transition-colors ${
-              viewMode === 'exec' ? 'bg-blue-600 text-white' : 'text-slate-500 hover:text-slate-700'
-            }`}
-          >
-            Exec View
-          </button>
-          <button
-            onClick={() => setViewMode('analyst')}
-            className={`h-9 px-4 rounded-lg text-xs font-black uppercase tracking-wider transition-colors ${
-              viewMode === 'analyst' ? 'bg-slate-900 text-white' : 'text-slate-500 hover:text-slate-700'
-            }`}
-          >
-            Analyst View
-          </button>
+        <div className="flex flex-wrap items-center gap-3">
+          <div className="inline-flex bg-background border border-slate-200 rounded-xl p-1 shadow-sm">
+            <button
+              onClick={() => setViewMode('exec')}
+              className={`h-9 px-4 rounded-lg text-xs font-black uppercase tracking-wider transition-colors ${
+                viewMode === 'exec' ? 'bg-blue-600 text-white' : 'text-slate-500 hover:text-slate-700'
+              }`}
+            >
+              Exec View
+            </button>
+            <button
+              onClick={() => setViewMode('analyst')}
+              className={`h-9 px-4 rounded-lg text-xs font-black uppercase tracking-wider transition-colors ${
+                viewMode === 'analyst' ? 'bg-slate-900 text-white' : 'text-slate-500 hover:text-slate-700'
+              }`}
+            >
+              Analyst View
+            </button>
+          </div>
+
+          <div className="inline-flex bg-background border border-slate-200 rounded-xl p-1 shadow-sm font-bold">
+            <button
+              onClick={() => setChannelFilter('all')}
+              className={`h-9 px-4 rounded-lg text-xs font-black uppercase tracking-wider transition-colors ${
+                channelFilter === 'all' ? 'bg-blue-600 text-white' : 'text-slate-500 hover:text-slate-700'
+              }`}
+            >
+              Blended
+            </button>
+            <button
+              onClick={() => setChannelFilter('paid')}
+              className={`h-9 px-4 rounded-lg text-xs font-black uppercase tracking-wider transition-colors ${
+                channelFilter === 'paid' ? 'bg-blue-600 text-white' : 'text-slate-500 hover:text-slate-700'
+              }`}
+            >
+              Paid Ads
+            </button>
+            <button
+              onClick={() => setChannelFilter('organic')}
+              className={`h-9 px-4 rounded-lg text-xs font-black uppercase tracking-wider transition-colors ${
+                channelFilter === 'organic' ? 'bg-blue-600 text-white' : 'text-slate-500 hover:text-slate-700'
+              }`}
+            >
+              Organic Social
+            </button>
+          </div>
         </div>
 
         <button
@@ -526,6 +685,19 @@ export const Dashboard: React.FC<DashboardProps> = ({ data, customKpis = [], bas
       </div>
 
       <div ref={dashboardRef} className="p-8 bg-[#fcfcfd] rounded-[3rem] space-y-8">
+
+        {/* ── Demo Data Warning ────────────────────────────────────────────── */}
+        {usedMockData && (
+          <div className="flex items-start gap-3 p-4 bg-amber-50 border border-amber-200 rounded-2xl">
+            <AlertTriangle size={20} className="text-amber-600 mt-0.5 flex-shrink-0" />
+            <div className="text-sm text-amber-900">
+              <span className="font-black uppercase tracking-wide">This report includes fabricated demo data.</span>{' '}
+              At least one connected channel (Facebook Organic, Instagram Organic, or LinkedIn
+              Organic) has no live API integration yet, so its numbers are randomly generated
+              sample data — not real performance figures. All other channels in this report are real.
+            </div>
+          </div>
+        )}
 
         {/* ── Comparison Banner ────────────────────────────────────────────── */}
         {comparisonType !== 'none' && comparisonType !== '' && (currentPeriodLabel || priorPeriodLabel) && (
@@ -581,19 +753,35 @@ export const Dashboard: React.FC<DashboardProps> = ({ data, customKpis = [], bas
         </div>
 
         {/* ── KPI Cards (2 rows of 5) ──────────────────────────────────────── */}
-        <div className="grid grid-cols-2 sm:grid-cols-5 gap-4">
-          <KpiCard title="Total Spend"   value={scorecards.totalSpend}       icon={DollarSign}    prefix="$" delta={scorecardDeltas.spend}       deltaLabel={deltaLabel} />
-          <KpiCard title="Total Revenue" value={scorecards.totalRevenue}     icon={DollarSign}    prefix="$" delta={scorecardDeltas.revenue}     deltaLabel={deltaLabel} />
-          <KpiCard title="Blended ROAS"  value={scorecards.blendedROAS}      icon={TrendingUp}    suffix="x" delta={scorecardDeltas.blendedROAS} deltaLabel={deltaLabel} />
-          <KpiCard title="Impressions"   value={scorecards.totalImpressions} icon={Eye}                      delta={scorecardDeltas.impressions} deltaLabel={deltaLabel} />
-          <KpiCard title="Clicks"        value={scorecards.totalClicks}      icon={MousePointer2}            delta={scorecardDeltas.clicks}      deltaLabel={deltaLabel} />
-          
-          <KpiCard title="Conversions"   value={scorecards.totalConversions} icon={Target}                   delta={scorecardDeltas.conversions} deltaLabel={deltaLabel} />
-          <KpiCard title="Blended CPA"   value={scorecards.blendedCPA}       icon={TrendingDown}  prefix="$" delta={scorecardDeltas.blendedCPA}  deltaLabel={deltaLabel} />
-          <KpiCard title="Blended CTR"   value={scorecards.blendedCTR}       icon={Percent}       suffix="%" delta={scorecardDeltas.blendedCTR}  deltaLabel={deltaLabel} />
-          <KpiCard title="Blended CVR"   value={scorecards.blendedCVR}       icon={Activity}      suffix="%" />
-          <KpiCard title="Blended CPC"   value={scorecards.blendedCPC}       icon={BarChart3}     prefix="$" />
-        </div>
+        {channelFilter === 'organic' ? (
+          <div className="grid grid-cols-2 sm:grid-cols-5 gap-4">
+            <KpiCard title="Organic Reach"      value={filteredScorecards.totalReach}       icon={Eye}           delta={scorecardDeltas.impressions} deltaLabel={deltaLabel} />
+            <KpiCard title="Engagements"        value={filteredScorecards.totalEngagements} icon={MousePointer2} delta={scorecardDeltas.clicks}      deltaLabel={deltaLabel} />
+            <KpiCard title="Engagement Rate"    value={filteredScorecards.engagementRate}    icon={Percent}       suffix="%" />
+            <KpiCard title="Organic Shares"     value={filteredScorecards.totalShares}      icon={TrendingUp} />
+            <KpiCard title="GA Sessions"        value={filteredScorecards.totalSessions}     icon={Activity} />
+
+            <KpiCard title="GA Conversions"     value={filteredScorecards.totalConversions} icon={Target}        delta={scorecardDeltas.conversions} deltaLabel={deltaLabel} />
+            <KpiCard title="Conversion Value"   value={filteredScorecards.totalRevenue}     icon={DollarSign}    prefix="$" delta={scorecardDeltas.revenue} deltaLabel={deltaLabel} />
+            <KpiCard title="Conversion Rate"    value={filteredScorecards.blendedCVR}       icon={Activity}      suffix="%" />
+            <KpiCard title="CPM (Est.)"         value={filteredScorecards.blendedCPM}       icon={BarChart3}     prefix="$" />
+            <KpiCard title="Cost"               value={0}                                   icon={DollarSign}    prefix="$" />
+          </div>
+        ) : (
+          <div className="grid grid-cols-2 sm:grid-cols-5 gap-4">
+            <KpiCard title="Total Spend"   value={filteredScorecards.totalSpend}       icon={DollarSign}    prefix="$" delta={scorecardDeltas.spend}       deltaLabel={deltaLabel} />
+            <KpiCard title="Total Revenue" value={filteredScorecards.totalRevenue}     icon={DollarSign}    prefix="$" delta={scorecardDeltas.revenue}     deltaLabel={deltaLabel} />
+            <KpiCard title="Blended ROAS"  value={filteredScorecards.blendedROAS}      icon={TrendingUp}    suffix="x" delta={scorecardDeltas.blendedROAS} deltaLabel={deltaLabel} />
+            <KpiCard title="Impressions"   value={filteredScorecards.totalImpressions} icon={Eye}                      delta={scorecardDeltas.impressions} deltaLabel={deltaLabel} />
+            <KpiCard title="Clicks"        value={filteredScorecards.totalClicks}      icon={MousePointer2}            delta={scorecardDeltas.clicks}      deltaLabel={deltaLabel} />
+            
+            <KpiCard title="Conversions"   value={filteredScorecards.totalConversions} icon={Target}                   delta={scorecardDeltas.conversions} deltaLabel={deltaLabel} />
+            <KpiCard title="Blended CPA"   value={filteredScorecards.blendedCPA}       icon={TrendingDown}  prefix="$" delta={scorecardDeltas.blendedCPA}  deltaLabel={deltaLabel} />
+            <KpiCard title="Blended CTR"   value={filteredScorecards.blendedCTR}       icon={Percent}       suffix="%" delta={scorecardDeltas.blendedCTR}  deltaLabel={deltaLabel} />
+            <KpiCard title="Blended CVR"   value={filteredScorecards.blendedCVR}       icon={Activity}      suffix="%" />
+            <KpiCard title="Blended CPC"   value={filteredScorecards.blendedCPC}       icon={BarChart3}     prefix="$" />
+          </div>
+        )}
 
         {customKpis.length > 0 && (
           <div className="mt-4">
@@ -609,11 +797,11 @@ export const Dashboard: React.FC<DashboardProps> = ({ data, customKpis = [], bas
         )}
 
         {/* ── Per-Platform Performance ─────────────────────────────────────── */}
-        {platformSummary.length > 0 && (
+        {filteredPlatformSummary.length > 0 && (
           <div>
             <SectionHeader icon={BarChart3} title="Per-Platform Performance" />
             <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4">
-              {platformSummary.map((plat) => (
+              {filteredPlatformSummary.map((plat) => (
                 <PlatformCard
                   key={plat.platform}
                   plat={plat}
@@ -663,33 +851,63 @@ export const Dashboard: React.FC<DashboardProps> = ({ data, customKpis = [], bas
                     <div className="overflow-x-auto">
                       <table className="w-full text-left text-xs">
                         <thead>
-                          <tr className="text-slate-400 uppercase tracking-wider">
-                            <th className="pb-2 pr-3">Name</th>
-                            <th className="pb-2 pr-3 text-right">Spend</th>
-                            <th className="pb-2 pr-3 text-right">Conv. Value</th>
-                            <th className="pb-2 pr-3 text-right">ROAS</th>
-                            <th className="pb-2 pr-3 text-right">Conv.</th>
-                            <th className="pb-2 pr-3 text-right">CPA</th>
-                            <th className="pb-2 pr-3 text-right">CTR</th>
-                            <th className="pb-2 text-right">% Spend</th>
-                          </tr>
+                          {isOrganicPlatform(platform) ? (
+                            <tr className="text-slate-400 uppercase tracking-wider">
+                              <th className="pb-2 pr-3">Name</th>
+                              <th className="pb-2 pr-3 text-right">Reach</th>
+                              <th className="pb-2 pr-3 text-right">Engagements</th>
+                              <th className="pb-2 pr-3 text-right">Engagement Rate</th>
+                              <th className="pb-2 pr-3 text-right">Shares</th>
+                              <th className="pb-2 pr-3 text-right">Sessions</th>
+                              <th className="pb-2 pr-3 text-right">Conversions</th>
+                              <th className="pb-2 text-right">Conv. Value</th>
+                            </tr>
+                          ) : (
+                            <tr className="text-slate-400 uppercase tracking-wider">
+                              <th className="pb-2 pr-3">Name</th>
+                              <th className="pb-2 pr-3 text-right">Spend</th>
+                              <th className="pb-2 pr-3 text-right">Conv. Value</th>
+                              <th className="pb-2 pr-3 text-right">ROAS</th>
+                              <th className="pb-2 pr-3 text-right">Conv.</th>
+                              <th className="pb-2 pr-3 text-right">CPA</th>
+                              <th className="pb-2 pr-3 text-right">CTR</th>
+                              <th className="pb-2 text-right">% Spend</th>
+                            </tr>
+                          )}
                         </thead>
                         <tbody>
                           {[...rows]
-                            .sort((a, b) => b.spend - a.spend)
+                            .sort((a, b) => isOrganicPlatform(platform) ? b.impressions - a.impressions : b.spend - a.spend)
                             .slice(0, 12)
-                            .map((r, idx) => (
-                              <tr key={`${platform}-${idx}`} className="border-t border-slate-50">
-                                <td className="py-2 pr-3 font-medium text-slate-700">{r.name || 'Unnamed'}</td>
-                                <td className="py-2 pr-3 text-right tabular-nums">${r.spend.toLocaleString(undefined, { maximumFractionDigits: 2 })}</td>
-                                <td className="py-2 pr-3 text-right tabular-nums">${(r.revenue ?? 0).toLocaleString(undefined, { maximumFractionDigits: 2 })}</td>
-                                <td className="py-2 pr-3 text-right tabular-nums">{(r.roas ?? 0).toFixed(2)}x</td>
-                                <td className="py-2 pr-3 text-right tabular-nums">{r.conversions.toLocaleString()}</td>
-                                <td className="py-2 pr-3 text-right tabular-nums">${r.cpa.toLocaleString(undefined, { maximumFractionDigits: 2 })}</td>
-                                <td className="py-2 pr-3 text-right tabular-nums">{r.ctr.toLocaleString(undefined, { maximumFractionDigits: 2 })}%</td>
-                                <td className="py-2 text-right tabular-nums">{r.spend_share.toLocaleString(undefined, { maximumFractionDigits: 2 })}%</td>
-                              </tr>
-                            ))}
+                            .map((r, idx) => {
+                              const rRaw = r as unknown as OrganicFields;
+                              return (
+                                <tr key={`${platform}-${idx}`} className="border-t border-slate-50">
+                                  <td className="py-2 pr-3 font-medium text-slate-700">{r.name || 'Unnamed'}</td>
+                                  {isOrganicPlatform(platform) ? (
+                                    <>
+                                      <td className="py-2 pr-3 text-right tabular-nums">{(rRaw.organic_reach ?? r.impressions ?? 0).toLocaleString()}</td>
+                                      <td className="py-2 pr-3 text-right tabular-nums">{(rRaw.organic_engagements ?? r.clicks ?? 0).toLocaleString()}</td>
+                                      <td className="py-2 pr-3 text-right tabular-nums">{(rRaw.engagement_rate ?? r.ctr ?? 0).toFixed(2)}%</td>
+                                      <td className="py-2 pr-3 text-right tabular-nums">{(rRaw.organic_shares ?? 0).toLocaleString()}</td>
+                                      <td className="py-2 pr-3 text-right tabular-nums">{(rRaw.ga_sessions ?? 0).toLocaleString()}</td>
+                                      <td className="py-2 pr-3 text-right tabular-nums">{r.conversions.toLocaleString()}</td>
+                                      <td className="py-2 text-right tabular-nums">{r.revenue ? `$${r.revenue.toLocaleString()}` : "$0.00"}</td>
+                                    </>
+                                  ) : (
+                                    <>
+                                      <td className="py-2 pr-3 text-right tabular-nums">${r.spend.toLocaleString(undefined, { maximumFractionDigits: 2 })}</td>
+                                      <td className="py-2 pr-3 text-right tabular-nums">${(r.revenue ?? 0).toLocaleString(undefined, { maximumFractionDigits: 2 })}</td>
+                                      <td className="py-2 pr-3 text-right tabular-nums">{(r.roas ?? 0).toFixed(2)}x</td>
+                                      <td className="py-2 pr-3 text-right tabular-nums">{r.conversions.toLocaleString()}</td>
+                                      <td className="py-2 pr-3 text-right tabular-nums">${r.cpa.toLocaleString(undefined, { maximumFractionDigits: 2 })}</td>
+                                      <td className="py-2 pr-3 text-right tabular-nums">{r.ctr.toLocaleString(undefined, { maximumFractionDigits: 2 })}%</td>
+                                      <td className="py-2 text-right tabular-nums">{r.spend_share.toLocaleString(undefined, { maximumFractionDigits: 2 })}%</td>
+                                    </>
+                                  )}
+                                </tr>
+                              );
+                            })}
                         </tbody>
                       </table>
                     </div>
@@ -724,11 +942,11 @@ export const Dashboard: React.FC<DashboardProps> = ({ data, customKpis = [], bas
                   </defs>
                   <CartesianGrid strokeDasharray="3 3" vertical={false} stroke="#f1f5f9" />
                   <XAxis dataKey="date" axisLine={false} tickLine={false} tick={{ fill: '#64748b', fontSize: 11 }} dy={10} />
-                  <YAxis axisLine={false} tickLine={false} tick={{ fill: '#64748b', fontSize: 11 }} tickFormatter={(v) => `$${v}`} />
-                  <Tooltip contentStyle={ChartTooltipStyle} formatter={(v: unknown) => [`$${Number(v).toFixed(2)}`, undefined]} />
+                  <YAxis axisLine={false} tickLine={false} tick={{ fill: '#64748b', fontSize: 11 }} tickFormatter={(v) => isOrganicOnly ? v.toLocaleString() : `$${v}`} />
+                  <Tooltip contentStyle={ChartTooltipStyle} formatter={(v: unknown) => [isOrganicOnly ? Number(v).toLocaleString() : `$${Number(v).toFixed(2)}`, undefined]} />
                   <Legend verticalAlign="top" height={36} />
                   {activePlatforms.map(p => (
-                    <Area key={p} type="monotone" dataKey={`${p}_spend`}
+                    <Area key={p} type="monotone" dataKey={isOrganicOnly ? `${p}_impressions` : `${p}_spend`}
                       stroke={PLATFORM_COLORS[p]} strokeWidth={2.5}
                       fillOpacity={1} fill={`url(#grad_${p})`} name={PLATFORM_DISPLAY[p]} />
                   ))}
@@ -738,30 +956,30 @@ export const Dashboard: React.FC<DashboardProps> = ({ data, customKpis = [], bas
           </div>
 
           <div className="bg-white p-8 rounded-[2rem] border border-slate-100 shadow-sm">
-            <SectionHeader icon={BarChart3} title="Spend Share" />
+            <SectionHeader icon={BarChart3} title={isOrganicOnly ? "Reach Share" : "Spend Share"} />
             <div className="h-[210px]">
               <ResponsiveContainer width="100%" height="100%">
                 <PieChart>
-                  <Pie data={spendShareData} cx="50%" cy="50%" innerRadius={60} outerRadius={90}
+                  <Pie data={pieShareData} cx="50%" cy="50%" innerRadius={60} outerRadius={90}
                     dataKey="value" paddingAngle={3}>
-                    {spendShareData.map((_: unknown, idx: number) => (
-                      <Cell key={idx} fill={spendShareData[idx].fill} />
+                    {pieShareData.map((_: unknown, idx: number) => (
+                      <Cell key={idx} fill={pieShareData[idx].fill} />
                     ))}
                   </Pie>
                   <Tooltip contentStyle={ChartTooltipStyle}
-                    formatter={(v: unknown) => [`$${Number(v).toLocaleString(undefined, { maximumFractionDigits: 0 })}`, undefined]} />
+                    formatter={(v: unknown) => [isOrganicOnly ? Number(v).toLocaleString() : `$${Number(v).toLocaleString(undefined, { maximumFractionDigits: 0 })}`, undefined]} />
                 </PieChart>
               </ResponsiveContainer>
             </div>
             <div className="mt-3 space-y-1.5">
-              {spendShareData.map((entry) => (
+              {pieShareData.map((entry) => (
                 <div key={entry.name} className="flex items-center justify-between text-xs">
                   <div className="flex items-center gap-2">
                     <div className="w-2.5 h-2.5 rounded-full flex-shrink-0" style={{ backgroundColor: entry.fill }} />
                     <span className="font-medium text-slate-600">{entry.name}</span>
                   </div>
                   <span className="font-bold text-slate-800 tabular-nums">
-                    ${entry.value.toLocaleString(undefined, { maximumFractionDigits: 0 })}
+                    {isOrganicOnly ? entry.value.toLocaleString() : `$${entry.value.toLocaleString(undefined, { maximumFractionDigits: 0 })}`}
                   </span>
                 </div>
               ))}
@@ -769,21 +987,21 @@ export const Dashboard: React.FC<DashboardProps> = ({ data, customKpis = [], bas
           </div>
         </div>
 
-        {/* ── Row 2: CPA over Time + Platform Efficiency Bar ──────────────── */}
+        {/* ── Row 2: CPA/Conversions over Time + Platform Efficiency Bar ──────────────── */}
         {viewMode === 'analyst' && (
         <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
           <div className="lg:col-span-2 bg-white p-8 rounded-[2rem] border border-slate-100 shadow-sm">
-            <SectionHeader icon={TrendingUp} title="CPA by Platform over Time" />
+            <SectionHeader icon={TrendingUp} title={isOrganicOnly ? "Conversions by Platform over Time" : "CPA by Platform over Time"} />
             <div className="h-[300px]">
               <ResponsiveContainer width="100%" height="100%">
                 <LineChart data={chartData}>
                   <CartesianGrid strokeDasharray="3 3" vertical={false} stroke="#f1f5f9" />
                   <XAxis dataKey="date" axisLine={false} tickLine={false} tick={{ fill: '#64748b', fontSize: 11 }} dy={10} />
-                  <YAxis axisLine={false} tickLine={false} tick={{ fill: '#64748b', fontSize: 11 }} tickFormatter={(v) => `$${v}`} />
-                  <Tooltip contentStyle={ChartTooltipStyle} formatter={(v: unknown) => [`$${Number(v).toFixed(2)}`, undefined]} />
+                  <YAxis axisLine={false} tickLine={false} tick={{ fill: '#64748b', fontSize: 11 }} tickFormatter={(v) => isOrganicOnly ? v : `$${v}`} />
+                  <Tooltip contentStyle={ChartTooltipStyle} formatter={(v: unknown) => [isOrganicOnly ? Number(v).toLocaleString() : `$${Number(v).toFixed(2)}`, undefined]} />
                   <Legend verticalAlign="top" height={36} />
                   {activePlatforms.map(p => (
-                    <Line key={p} type="monotone" dataKey={`${p}_cpa`}
+                    <Line key={p} type="monotone" dataKey={isOrganicOnly ? `${p}_conversions` : `${p}_cpa`}
                       stroke={PLATFORM_COLORS[p]} strokeWidth={2.5}
                       dot={false} name={PLATFORM_DISPLAY[p]} connectNulls />
                   ))}
@@ -793,17 +1011,17 @@ export const Dashboard: React.FC<DashboardProps> = ({ data, customKpis = [], bas
           </div>
 
           <div className="bg-white p-8 rounded-[2rem] border border-slate-100 shadow-sm">
-            <SectionHeader icon={BarChart3} title="Platform CPA Ranking" />
-            <p className="text-xs text-slate-400 font-medium -mt-4 mb-5">Lower = more efficient</p>
+            <SectionHeader icon={BarChart3} title={isOrganicOnly ? "Platform Conversion Volume" : "Platform CPA Ranking"} />
+            <p className="text-xs text-slate-400 font-medium -mt-4 mb-5">{isOrganicOnly ? "Higher = more volume" : "Lower = more efficient"}</p>
             {efficiencyData.length > 0 ? (
               <div className="h-[260px]">
                 <ResponsiveContainer width="100%" height="100%">
                   <BarChart data={efficiencyData} layout="vertical" margin={{ left: 0, right: 16 }}>
                     <CartesianGrid strokeDasharray="3 3" horizontal={false} stroke="#f1f5f9" />
-                    <XAxis type="number" axisLine={false} tickLine={false} tick={{ fill: '#64748b', fontSize: 11 }} tickFormatter={(v) => `$${v}`} />
+                    <XAxis type="number" axisLine={false} tickLine={false} tick={{ fill: '#64748b', fontSize: 11 }} tickFormatter={(v) => isOrganicOnly ? v : `$${v}`} />
                     <YAxis type="category" dataKey="platform" axisLine={false} tickLine={false} tick={{ fill: '#64748b', fontSize: 11 }} width={84} />
-                    <Tooltip contentStyle={ChartTooltipStyle} formatter={(v: unknown) => [`$${Number(v).toFixed(2)} CPA`, undefined]} />
-                    <Bar dataKey="cpa" radius={[0, 8, 8, 0]}>
+                    <Tooltip contentStyle={ChartTooltipStyle} formatter={(v: unknown) => [isOrganicOnly ? `${Number(v).toLocaleString()} Conversions` : `$${Number(v).toFixed(2)} CPA`, undefined]} />
+                    <Bar dataKey="value" radius={[0, 8, 8, 0]}>
                       {efficiencyData.map((_: unknown, idx: number) => (
                         <Cell key={idx} fill={efficiencyData[idx].fill} />
                       ))}
@@ -819,7 +1037,7 @@ export const Dashboard: React.FC<DashboardProps> = ({ data, customKpis = [], bas
         )}
 
         {/* ── Row 3: ROAS over Time ────────────────────────────────────────── */}
-        {viewMode === 'analyst' && (
+        {viewMode === 'analyst' && !isOrganicOnly && (
         <div className="grid grid-cols-1 gap-6">
           <div className="bg-white p-8 rounded-[2rem] border border-slate-100 shadow-sm">
             <SectionHeader icon={TrendingUp} title="ROAS by Platform over Time" />
@@ -845,7 +1063,7 @@ export const Dashboard: React.FC<DashboardProps> = ({ data, customKpis = [], bas
 
         {/* ── Campaign Table ───────────────────────────────────────────────── */}
         {viewMode === 'analyst' && (
-          <CampaignTable data={campaignSummary} blendedCPA={scorecards.blendedCPA} />
+          <CampaignTable data={filteredCampaignSummary} blendedCPA={filteredScorecards.blendedCPA} />
         )}
 
         {/* ── Gemini Analysis ──────────────────────────────────────────────── */}

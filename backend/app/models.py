@@ -1,72 +1,94 @@
-from sqlalchemy import Column, Integer, String, DateTime, JSON, Text, ForeignKey, UniqueConstraint
-from sqlalchemy.dialects.postgresql import JSONB
 from datetime import datetime
+from typing import Any, Optional
+
+from sqlalchemy import ForeignKey, Integer, String, DateTime, JSON, Text, UniqueConstraint
+from sqlalchemy.dialects.postgresql import JSONB
+from sqlalchemy.orm import Mapped, mapped_column
+
 from .database import Base
 
 # Portable JSON: compiles to JSONB on Postgres (indexable/queryable), JSON on SQLite.
 JSONPortable = JSON().with_variant(JSONB(), "postgresql")
 
+# NOTE on nullability: every mapped_column() below passes `nullable=` explicitly
+# rather than relying on Mapped[]/Optional[] type inference, so the actual DDL
+# is byte-for-byte identical to the pre-migration Column()-based declarations —
+# this was a typing-only migration (Column[T] -> Mapped[T] for real mypy
+# support), not a schema change. Where a column has a Python-side `default=`
+# and is practically always populated (timestamps, status strings), the
+# Mapped[] hint is left non-Optional for ergonomics even though the DB column
+# itself may still permit NULL; the explicit `nullable=` kwarg is what governs
+# actual behavior, and always wins over the annotation.
+
+
 class SyncJob(Base):
     __tablename__ = "sync_jobs"
 
-    id = Column(Integer, primary_key=True, index=True)
-    workspace_id = Column(Integer, ForeignKey("workspaces.id"), index=True, nullable=False)
-    user_id = Column(String, index=True)  # creator (audit)
-    connection_id = Column(Integer, index=True)
-    status = Column(String, default="pending")  # pending, running, completed, failed
-    created_at = Column(DateTime, default=datetime.utcnow)
-    started_at = Column(DateTime)
-    completed_at = Column(DateTime)
-    progress_percent = Column(Integer, default=0)
-    current_step = Column(String)  # e.g., "Discovering accounts", "Fetching data"
-    total_steps = Column(Integer, default=0)
-    accounts_synced = Column(Integer, default=0)
-    total_accounts = Column(Integer, default=0)
-    error_message = Column(String)
-    logs = Column(Text)  # Cumulative detailed logs
-    report_id = Column(Integer)  # Reference to generated report after completion
-    retry_count = Column(Integer, default=0)
-    max_retries = Column(Integer, default=3)
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, index=True)
+    workspace_id: Mapped[int] = mapped_column(Integer, ForeignKey("workspaces.id"), index=True, nullable=False)
+    user_id: Mapped[Optional[str]] = mapped_column(String, index=True, nullable=True)  # creator (audit)
+    connection_id: Mapped[Optional[int]] = mapped_column(Integer, index=True, nullable=True)
+    status: Mapped[str] = mapped_column(String, default="pending", nullable=True)  # pending, running, completed, failed
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, nullable=True)
+    started_at: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
+    completed_at: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
+    progress_percent: Mapped[int] = mapped_column(Integer, default=0, nullable=True)
+    current_step: Mapped[Optional[str]] = mapped_column(String, nullable=True)  # e.g., "Discovering accounts", "Fetching data"
+    total_steps: Mapped[int] = mapped_column(Integer, default=0, nullable=True)
+    accounts_synced: Mapped[int] = mapped_column(Integer, default=0, nullable=True)
+    total_accounts: Mapped[int] = mapped_column(Integer, default=0, nullable=True)
+    error_message: Mapped[Optional[str]] = mapped_column(String, nullable=True)
+    logs: Mapped[Optional[str]] = mapped_column(Text, nullable=True)  # Cumulative detailed logs
+    report_id: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)  # Reference to generated report after completion
+    retry_count: Mapped[int] = mapped_column(Integer, default=0, nullable=True)
+    max_retries: Mapped[int] = mapped_column(Integer, default=3, nullable=True)
+
 
 class Report(Base):
     __tablename__ = "reports"
 
-    id = Column(Integer, primary_key=True, index=True)
-    workspace_id = Column(Integer, ForeignKey("workspaces.id"), index=True, nullable=False)
-    user_id = Column(String, index=True)  # creator (audit)
-    created_at = Column(DateTime, default=datetime.utcnow)
-    chart_data = Column(JSONPortable)
-    scorecards = Column(JSONPortable)
-    scorecard_deltas = Column(JSONPortable)
-    platform_deltas = Column(JSONPortable)
-    comparison_type = Column(String, default="none")
-    current_period_label = Column(String)
-    prior_period_label = Column(String)
-    campaign_summary = Column(JSONPortable)
-    hierarchy_summary = Column(JSONPortable)
-    platform_summary = Column(JSONPortable)
-    top_performer = Column(JSONPortable)
-    bottom_performer = Column(JSONPortable)
-    gemini_analysis = Column(String)
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, index=True)
+    workspace_id: Mapped[int] = mapped_column(Integer, ForeignKey("workspaces.id"), index=True, nullable=False)
+    user_id: Mapped[Optional[str]] = mapped_column(String, index=True, nullable=True)  # creator (audit)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, nullable=True)
+    chart_data: Mapped[Optional[Any]] = mapped_column(JSONPortable, nullable=True)
+    scorecards: Mapped[Optional[Any]] = mapped_column(JSONPortable, nullable=True)
+    scorecard_deltas: Mapped[Optional[Any]] = mapped_column(JSONPortable, nullable=True)
+    platform_deltas: Mapped[Optional[Any]] = mapped_column(JSONPortable, nullable=True)
+    comparison_type: Mapped[str] = mapped_column(String, default="none", nullable=True)
+    current_period_label: Mapped[Optional[str]] = mapped_column(String, nullable=True)
+    prior_period_label: Mapped[Optional[str]] = mapped_column(String, nullable=True)
+    campaign_summary: Mapped[Optional[Any]] = mapped_column(JSONPortable, nullable=True)
+    hierarchy_summary: Mapped[Optional[Any]] = mapped_column(JSONPortable, nullable=True)
+    platform_summary: Mapped[Optional[Any]] = mapped_column(JSONPortable, nullable=True)
+    top_performer: Mapped[Optional[Any]] = mapped_column(JSONPortable, nullable=True)
+    bottom_performer: Mapped[Optional[Any]] = mapped_column(JSONPortable, nullable=True)
+    gemini_analysis: Mapped[Optional[str]] = mapped_column(String, nullable=True)
+    # 1 if any source row was fabricated (demo mode). NOT NULL server_default
+    # "0" at the DB level (see migration c1e2f3a4b5c9) — nullable=False here
+    # keeps the model in sync with that.
+    used_mock_data: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+
 
 class Connection(Base):
     __tablename__ = "connections"
 
-    id = Column(Integer, primary_key=True, index=True)
-    workspace_id = Column(Integer, ForeignKey("workspaces.id"), index=True, nullable=False)
-    user_id = Column(String, index=True)  # who connected it (audit)
-    platform = Column(String)  # google, meta, linkedin, tiktok
-    account_id = Column(String)
-    account_name = Column(String)
-    access_token = Column(String)
-    refresh_token = Column(String)
-    expires_at = Column(DateTime)
-    is_active = Column(Integer, default=1)
-    available_accounts = Column(JSONPortable)
-    selected_account_ids = Column(JSONPortable)
-    last_sync_at = Column(DateTime)
-    last_sync_status = Column(String)  # success, failed, pending
-    last_sync_job_id = Column(Integer)
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, index=True)
+    workspace_id: Mapped[int] = mapped_column(Integer, ForeignKey("workspaces.id"), index=True, nullable=False)
+    user_id: Mapped[Optional[str]] = mapped_column(String, index=True, nullable=True)  # who connected it (audit)
+    platform: Mapped[Optional[str]] = mapped_column(String, nullable=True)  # google, meta, linkedin, tiktok, ...
+    account_id: Mapped[Optional[str]] = mapped_column(String, nullable=True)
+    account_name: Mapped[Optional[str]] = mapped_column(String, nullable=True)
+    access_token: Mapped[Optional[str]] = mapped_column(String, nullable=True)
+    refresh_token: Mapped[Optional[str]] = mapped_column(String, nullable=True)
+    expires_at: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
+    is_active: Mapped[int] = mapped_column(Integer, default=1, nullable=True)
+    available_accounts: Mapped[Optional[Any]] = mapped_column(JSONPortable, nullable=True)
+    selected_account_ids: Mapped[Optional[Any]] = mapped_column(JSONPortable, nullable=True)
+    last_sync_at: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
+    last_sync_status: Mapped[Optional[str]] = mapped_column(String, nullable=True)  # success, failed, pending
+    last_sync_job_id: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
+
 
 class UserSettings(Base):
     """Workspace-scoped settings. Despite the legacy table name, the
@@ -74,65 +96,67 @@ class UserSettings(Base):
     the channel), so uniqueness is now on workspace_id, not user_id."""
     __tablename__ = "user_settings"
 
-    id = Column(Integer, primary_key=True, index=True)
-    workspace_id = Column(Integer, ForeignKey("workspaces.id"), unique=True, index=True, nullable=False)
-    user_id = Column(String, index=True)  # last editor (audit)
-    google_chat_webhook = Column(String, nullable=True)
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, index=True)
+    workspace_id: Mapped[int] = mapped_column(Integer, ForeignKey("workspaces.id"), unique=True, index=True, nullable=False)
+    user_id: Mapped[Optional[str]] = mapped_column(String, index=True, nullable=True)  # last editor (audit)
+    google_chat_webhook: Mapped[Optional[str]] = mapped_column(String, nullable=True)
+
 
 class OptimizationPlan(Base):
     __tablename__ = "optimization_plans"
 
-    id = Column(Integer, primary_key=True, index=True)
-    workspace_id = Column(Integer, ForeignKey("workspaces.id"), index=True, nullable=False)
-    user_id = Column(String, index=True)  # creator (audit)
-    connection_id = Column(Integer, index=True)
-    platform = Column(String)  # google, meta, etc.
-    campaign_name = Column(String, nullable=True)
-    ad_group_name = Column(String, nullable=True)
-    change_type = Column(String)  # budget_increase, pause_underperforming, etc.
-    original_value = Column(JSONPortable)
-    proposed_value = Column(JSONPortable)
-    status = Column(String, default="pending")  # pending, approved, rejected, executed, failed
-    reasoning = Column(Text)
-    is_automated = Column(Integer, default=0)  # 1 if automated, 0 if manual
-    created_at = Column(DateTime, default=datetime.utcnow)
-    executed_at = Column(DateTime, nullable=True)
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, index=True)
+    workspace_id: Mapped[int] = mapped_column(Integer, ForeignKey("workspaces.id"), index=True, nullable=False)
+    user_id: Mapped[Optional[str]] = mapped_column(String, index=True, nullable=True)  # creator (audit)
+    connection_id: Mapped[Optional[int]] = mapped_column(Integer, index=True, nullable=True)
+    platform: Mapped[Optional[str]] = mapped_column(String, nullable=True)  # google, meta, etc.
+    campaign_name: Mapped[Optional[str]] = mapped_column(String, nullable=True)
+    ad_group_name: Mapped[Optional[str]] = mapped_column(String, nullable=True)
+    change_type: Mapped[Optional[str]] = mapped_column(String, nullable=True)  # budget_increase, pause_underperforming, etc.
+    original_value: Mapped[Optional[Any]] = mapped_column(JSONPortable, nullable=True)
+    proposed_value: Mapped[Optional[Any]] = mapped_column(JSONPortable, nullable=True)
+    status: Mapped[str] = mapped_column(String, default="pending", nullable=True)  # pending, approved, rejected, executed, failed
+    reasoning: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    is_automated: Mapped[int] = mapped_column(Integer, default=0, nullable=True)  # 1 if automated, 0 if manual
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, nullable=True)
+    executed_at: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
+
 
 class Conversation(Base):
     __tablename__ = "conversations"
 
-    id = Column(Integer, primary_key=True, index=True)
-    workspace_id = Column(Integer, ForeignKey("workspaces.id"), index=True, nullable=False)
-    user_id = Column(String, index=True)  # author
-    title = Column(String)
-    visibility = Column(String, nullable=False, default="private")  # private | workspace
-    created_at = Column(DateTime, default=datetime.utcnow)
-    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, index=True)
+    workspace_id: Mapped[int] = mapped_column(Integer, ForeignKey("workspaces.id"), index=True, nullable=False)
+    user_id: Mapped[Optional[str]] = mapped_column(String, index=True, nullable=True)  # author
+    title: Mapped[Optional[str]] = mapped_column(String, nullable=True)
+    visibility: Mapped[str] = mapped_column(String, nullable=False, default="private")  # private | workspace
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, nullable=True)
+    updated_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow, nullable=True)
 
 
 class Message(Base):
     __tablename__ = "messages"
 
-    id = Column(Integer, primary_key=True, index=True)
-    conversation_id = Column(Integer, ForeignKey("conversations.id"), index=True)
-    role = Column(String)  # user | assistant | tool
-    content = Column(Text)
-    tool_name = Column(String, nullable=True)
-    tool_call_id = Column(String, nullable=True)
-    tool_payload = Column(JSONPortable, nullable=True)
-    created_at = Column(DateTime, default=datetime.utcnow)
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, index=True)
+    conversation_id: Mapped[Optional[int]] = mapped_column(Integer, ForeignKey("conversations.id"), index=True, nullable=True)
+    role: Mapped[Optional[str]] = mapped_column(String, nullable=True)  # user | assistant | tool
+    content: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    tool_name: Mapped[Optional[str]] = mapped_column(String, nullable=True)
+    tool_call_id: Mapped[Optional[str]] = mapped_column(String, nullable=True)
+    tool_payload: Mapped[Optional[Any]] = mapped_column(JSONPortable, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, nullable=True)
 
 
 class OptimizationRule(Base):
     __tablename__ = "optimization_rules"
 
-    id = Column(Integer, primary_key=True, index=True)
-    workspace_id = Column(Integer, ForeignKey("workspaces.id"), index=True, nullable=False)
-    user_id = Column(String, index=True)  # creator (audit), not data scope
-    platform = Column(String)
-    change_type = Column(String)  # Identifies which type of change is automated
-    is_active = Column(Integer, default=1)
-    created_at = Column(DateTime, default=datetime.utcnow)
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, index=True)
+    workspace_id: Mapped[int] = mapped_column(Integer, ForeignKey("workspaces.id"), index=True, nullable=False)
+    user_id: Mapped[Optional[str]] = mapped_column(String, index=True, nullable=True)  # creator (audit), not data scope
+    platform: Mapped[Optional[str]] = mapped_column(String, nullable=True)
+    change_type: Mapped[Optional[str]] = mapped_column(String, nullable=True)  # Identifies which type of change is automated
+    is_active: Mapped[int] = mapped_column(Integer, default=1, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, nullable=True)
 
 
 # ── Multi-workspace tables ──────────────────────────────────────────────────
@@ -141,22 +165,22 @@ class OptimizationRule(Base):
 class User(Base):
     __tablename__ = "users"
 
-    id = Column(Integer, primary_key=True, index=True)
-    auth_subject = Column(String, unique=True, index=True, nullable=False)
-    email = Column(String, unique=True, index=True)
-    name = Column(String)
-    created_at = Column(DateTime, default=datetime.utcnow)
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, index=True)
+    auth_subject: Mapped[str] = mapped_column(String, unique=True, index=True, nullable=False)
+    email: Mapped[Optional[str]] = mapped_column(String, unique=True, index=True, nullable=True)
+    name: Mapped[Optional[str]] = mapped_column(String, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, nullable=True)
 
 
 class Workspace(Base):
     __tablename__ = "workspaces"
 
-    id = Column(Integer, primary_key=True, index=True)
-    name = Column(String, nullable=False)
-    slug = Column(String, unique=True, index=True, nullable=False)
-    created_by_subject = Column(String, index=True)  # FK-by-value to users.auth_subject
-    base_currency = Column(String, nullable=False, default="USD")
-    created_at = Column(DateTime, default=datetime.utcnow)
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, index=True)
+    name: Mapped[str] = mapped_column(String, nullable=False)
+    slug: Mapped[str] = mapped_column(String, unique=True, index=True, nullable=False)
+    created_by_subject: Mapped[Optional[str]] = mapped_column(String, index=True, nullable=True)  # FK-by-value to users.auth_subject
+    base_currency: Mapped[str] = mapped_column(String, nullable=False, default="USD")
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, nullable=True)
 
 
 class FxRate(Base):
@@ -168,12 +192,12 @@ class FxRate(Base):
     """
     __tablename__ = "fx_rates"
 
-    id = Column(Integer, primary_key=True, index=True)
-    as_of_date = Column(String, nullable=False, index=True)  # YYYY-MM-DD
-    from_currency = Column(String, nullable=False, index=True)
-    to_currency = Column(String, nullable=False, index=True)
-    rate = Column(String, nullable=False)  # decimal stored as string
-    fetched_at = Column(DateTime, default=datetime.utcnow)
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, index=True)
+    as_of_date: Mapped[str] = mapped_column(String, nullable=False, index=True)  # YYYY-MM-DD
+    from_currency: Mapped[str] = mapped_column(String, nullable=False, index=True)
+    to_currency: Mapped[str] = mapped_column(String, nullable=False, index=True)
+    rate: Mapped[str] = mapped_column(String, nullable=False)  # decimal stored as string
+    fetched_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, nullable=True)
 
     __table_args__ = (
         UniqueConstraint(
@@ -185,11 +209,11 @@ class FxRate(Base):
 class Membership(Base):
     __tablename__ = "memberships"
 
-    id = Column(Integer, primary_key=True, index=True)
-    workspace_id = Column(Integer, ForeignKey("workspaces.id"), index=True, nullable=False)
-    user_subject = Column(String, index=True, nullable=False)  # users.auth_subject
-    role = Column(String, nullable=False, default="owner")  # owner | admin | member | viewer
-    created_at = Column(DateTime, default=datetime.utcnow)
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, index=True)
+    workspace_id: Mapped[int] = mapped_column(Integer, ForeignKey("workspaces.id"), index=True, nullable=False)
+    user_subject: Mapped[str] = mapped_column(String, index=True, nullable=False)  # users.auth_subject
+    role: Mapped[str] = mapped_column(String, nullable=False, default="owner")  # owner | admin | member | viewer
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, nullable=True)
 
     __table_args__ = (
         UniqueConstraint("workspace_id", "user_subject", name="uq_membership_workspace_user"),
@@ -199,15 +223,15 @@ class Membership(Base):
 class Invite(Base):
     __tablename__ = "invites"
 
-    id = Column(Integer, primary_key=True, index=True)
-    workspace_id = Column(Integer, ForeignKey("workspaces.id"), index=True, nullable=False)
-    email = Column(String, nullable=False, index=True)
-    role = Column(String, nullable=False)
-    token_hash = Column(String, nullable=False, index=True)
-    invited_by_subject = Column(String)
-    expires_at = Column(DateTime, nullable=False)
-    accepted_at = Column(DateTime, nullable=True)
-    created_at = Column(DateTime, default=datetime.utcnow)
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, index=True)
+    workspace_id: Mapped[int] = mapped_column(Integer, ForeignKey("workspaces.id"), index=True, nullable=False)
+    email: Mapped[str] = mapped_column(String, nullable=False, index=True)
+    role: Mapped[str] = mapped_column(String, nullable=False)
+    token_hash: Mapped[str] = mapped_column(String, nullable=False, index=True)
+    invited_by_subject: Mapped[Optional[str]] = mapped_column(String, nullable=True)
+    expires_at: Mapped[datetime] = mapped_column(DateTime, nullable=False)
+    accepted_at: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, nullable=True)
 
 
 class ScheduledSync(Base):
@@ -216,17 +240,17 @@ class ScheduledSync(Base):
     sync_all_connections, then advances next_run_at."""
     __tablename__ = "scheduled_syncs"
 
-    id = Column(Integer, primary_key=True, index=True)
-    workspace_id = Column(Integer, ForeignKey("workspaces.id"), index=True, nullable=False)
-    name = Column(String, nullable=False)
-    frequency = Column(String, nullable=False)  # daily | weekly
-    hour_utc = Column(Integer, nullable=False)  # 0-23
-    day_of_week = Column(Integer, nullable=True)  # 0=Mon..6=Sun, only for weekly
-    is_active = Column(Integer, default=1, nullable=False)
-    created_by_subject = Column(String, index=True)
-    created_at = Column(DateTime, default=datetime.utcnow)
-    last_run_at = Column(DateTime, nullable=True)
-    next_run_at = Column(DateTime, nullable=False, index=True)
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, index=True)
+    workspace_id: Mapped[int] = mapped_column(Integer, ForeignKey("workspaces.id"), index=True, nullable=False)
+    name: Mapped[str] = mapped_column(String, nullable=False)
+    frequency: Mapped[str] = mapped_column(String, nullable=False)  # daily | weekly
+    hour_utc: Mapped[int] = mapped_column(Integer, nullable=False)  # 0-23
+    day_of_week: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)  # 0=Mon..6=Sun, only for weekly
+    is_active: Mapped[int] = mapped_column(Integer, default=1, nullable=False)
+    created_by_subject: Mapped[Optional[str]] = mapped_column(String, index=True, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, nullable=True)
+    last_run_at: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
+    next_run_at: Mapped[datetime] = mapped_column(DateTime, nullable=False, index=True)
 
 
 class AlertRule(Base):
@@ -239,18 +263,18 @@ class AlertRule(Base):
     """
     __tablename__ = "alert_rules"
 
-    id = Column(Integer, primary_key=True, index=True)
-    workspace_id = Column(Integer, ForeignKey("workspaces.id"), index=True, nullable=False)
-    name = Column(String, nullable=False)
-    metric = Column(String, nullable=False)
-    comparison = Column(String, nullable=False)  # gt | lt | pct_change_gt
-    threshold = Column(String, nullable=False)  # stored as string to keep migration simple
-    channels = Column(JSONPortable, nullable=True)  # list of channel specs
-    is_active = Column(Integer, default=1, nullable=False)
-    created_by_subject = Column(String, index=True)
-    created_at = Column(DateTime, default=datetime.utcnow)
-    last_triggered_at = Column(DateTime, nullable=True)
-    last_value = Column(String, nullable=True)
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, index=True)
+    workspace_id: Mapped[int] = mapped_column(Integer, ForeignKey("workspaces.id"), index=True, nullable=False)
+    name: Mapped[str] = mapped_column(String, nullable=False)
+    metric: Mapped[str] = mapped_column(String, nullable=False)
+    comparison: Mapped[str] = mapped_column(String, nullable=False)  # gt | lt | pct_change_gt
+    threshold: Mapped[str] = mapped_column(String, nullable=False)  # stored as string to keep migration simple
+    channels: Mapped[Optional[Any]] = mapped_column(JSONPortable, nullable=True)  # list of channel specs
+    is_active: Mapped[int] = mapped_column(Integer, default=1, nullable=False)
+    created_by_subject: Mapped[Optional[str]] = mapped_column(String, index=True, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, nullable=True)
+    last_triggered_at: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
+    last_value: Mapped[Optional[str]] = mapped_column(String, nullable=True)
 
 
 class Budget(Base):
@@ -269,20 +293,20 @@ class Budget(Base):
     """
     __tablename__ = "budgets"
 
-    id = Column(Integer, primary_key=True, index=True)
-    workspace_id = Column(Integer, ForeignKey("workspaces.id"), index=True, nullable=False)
-    name = Column(String, nullable=False)
-    scope_type = Column(String, nullable=False)  # workspace | platform | connection
-    scope_key = Column(String, nullable=True)  # platform name or connection id string
-    period_type = Column(String, nullable=False)  # monthly | quarterly
-    amount = Column(String, nullable=False)  # USD, stored as string for migration simplicity
-    start_date = Column(DateTime, nullable=False)
-    is_active = Column(Integer, default=1, nullable=False)
-    alert_at_pct = Column(Integer, nullable=True)  # 0..100, NULL disables
-    last_alert_at = Column(DateTime, nullable=True)
-    last_alert_period = Column(String, nullable=True)  # e.g. "2026-05" to dedupe within period
-    created_by_subject = Column(String, index=True)
-    created_at = Column(DateTime, default=datetime.utcnow)
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, index=True)
+    workspace_id: Mapped[int] = mapped_column(Integer, ForeignKey("workspaces.id"), index=True, nullable=False)
+    name: Mapped[str] = mapped_column(String, nullable=False)
+    scope_type: Mapped[str] = mapped_column(String, nullable=False)  # workspace | platform | connection
+    scope_key: Mapped[Optional[str]] = mapped_column(String, nullable=True)  # platform name or connection id string
+    period_type: Mapped[str] = mapped_column(String, nullable=False)  # monthly | quarterly
+    amount: Mapped[str] = mapped_column(String, nullable=False)  # USD, stored as string for migration simplicity
+    start_date: Mapped[datetime] = mapped_column(DateTime, nullable=False)
+    is_active: Mapped[int] = mapped_column(Integer, default=1, nullable=False)
+    alert_at_pct: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)  # 0..100, NULL disables
+    last_alert_at: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
+    last_alert_period: Mapped[Optional[str]] = mapped_column(String, nullable=True)  # e.g. "2026-05" to dedupe within period
+    created_by_subject: Mapped[Optional[str]] = mapped_column(String, index=True, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, nullable=True)
 
 
 class SavedView(Base):
@@ -294,14 +318,14 @@ class SavedView(Base):
     """
     __tablename__ = "saved_views"
 
-    id = Column(Integer, primary_key=True, index=True)
-    workspace_id = Column(Integer, ForeignKey("workspaces.id"), index=True, nullable=False)
-    user_id = Column(String, index=True, nullable=False)  # creator
-    name = Column(String, nullable=False)
-    visibility = Column(String, nullable=False, default="private")  # private | workspace
-    config = Column(JSONPortable, nullable=True)
-    is_default = Column(Integer, default=0, nullable=False)  # only one per (workspace, user)
-    created_at = Column(DateTime, default=datetime.utcnow)
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, index=True)
+    workspace_id: Mapped[int] = mapped_column(Integer, ForeignKey("workspaces.id"), index=True, nullable=False)
+    user_id: Mapped[str] = mapped_column(String, index=True, nullable=False)  # creator
+    name: Mapped[str] = mapped_column(String, nullable=False)
+    visibility: Mapped[str] = mapped_column(String, nullable=False, default="private")  # private | workspace
+    config: Mapped[Optional[Any]] = mapped_column(JSONPortable, nullable=True)
+    is_default: Mapped[int] = mapped_column(Integer, default=0, nullable=False)  # only one per (workspace, user)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, nullable=True)
 
 
 class DigestSubscription(Base):
@@ -314,16 +338,16 @@ class DigestSubscription(Base):
     + display."""
     __tablename__ = "digest_subscriptions"
 
-    id = Column(Integer, primary_key=True, index=True)
-    workspace_id = Column(Integer, ForeignKey("workspaces.id"), index=True, nullable=False)
-    user_subject = Column(String, index=True, nullable=False)
-    email = Column(String, nullable=False)
-    cadence = Column(String, nullable=False)  # daily | weekly
-    is_active = Column(Integer, default=1, nullable=False)
-    next_send_at = Column(DateTime, nullable=False, index=True)
-    last_sent_at = Column(DateTime, nullable=True)
-    last_send_error = Column(String, nullable=True)
-    created_at = Column(DateTime, default=datetime.utcnow)
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, index=True)
+    workspace_id: Mapped[int] = mapped_column(Integer, ForeignKey("workspaces.id"), index=True, nullable=False)
+    user_subject: Mapped[str] = mapped_column(String, index=True, nullable=False)
+    email: Mapped[str] = mapped_column(String, nullable=False)
+    cadence: Mapped[str] = mapped_column(String, nullable=False)  # daily | weekly
+    is_active: Mapped[int] = mapped_column(Integer, default=1, nullable=False)
+    next_send_at: Mapped[datetime] = mapped_column(DateTime, nullable=False, index=True)
+    last_sent_at: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
+    last_send_error: Mapped[Optional[str]] = mapped_column(String, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, nullable=True)
 
     __table_args__ = (
         UniqueConstraint("workspace_id", "user_subject", name="uq_digest_workspace_user"),
@@ -340,16 +364,16 @@ class ReportShareLink(Base):
     """
     __tablename__ = "report_share_links"
 
-    id = Column(Integer, primary_key=True, index=True)
-    workspace_id = Column(Integer, ForeignKey("workspaces.id"), index=True, nullable=False)
-    report_id = Column(Integer, ForeignKey("reports.id"), index=True, nullable=False)
-    token_hash = Column(String, unique=True, index=True, nullable=False)
-    created_by_subject = Column(String, index=True)
-    expires_at = Column(DateTime, nullable=False)
-    is_active = Column(Integer, default=1, nullable=False)
-    last_viewed_at = Column(DateTime, nullable=True)
-    view_count = Column(Integer, default=0, nullable=False)
-    created_at = Column(DateTime, default=datetime.utcnow)
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, index=True)
+    workspace_id: Mapped[int] = mapped_column(Integer, ForeignKey("workspaces.id"), index=True, nullable=False)
+    report_id: Mapped[int] = mapped_column(Integer, ForeignKey("reports.id"), index=True, nullable=False)
+    token_hash: Mapped[str] = mapped_column(String, unique=True, index=True, nullable=False)
+    created_by_subject: Mapped[Optional[str]] = mapped_column(String, index=True, nullable=True)
+    expires_at: Mapped[datetime] = mapped_column(DateTime, nullable=False)
+    is_active: Mapped[int] = mapped_column(Integer, default=1, nullable=False)
+    last_viewed_at: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
+    view_count: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, nullable=True)
 
 
 class CustomKpi(Base):
@@ -367,16 +391,16 @@ class CustomKpi(Base):
     """
     __tablename__ = "custom_kpis"
 
-    id = Column(Integer, primary_key=True, index=True)
-    workspace_id = Column(Integer, ForeignKey("workspaces.id"), index=True, nullable=False)
-    name = Column(String, nullable=False)
-    formula = Column(Text, nullable=False)
-    format = Column(String, nullable=False, default="number")
-    description = Column(Text, nullable=True)
-    sort_order = Column(Integer, nullable=False, default=0)
-    is_active = Column(Integer, nullable=False, default=1)
-    created_by_subject = Column(String, index=True)
-    created_at = Column(DateTime, default=datetime.utcnow)
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, index=True)
+    workspace_id: Mapped[int] = mapped_column(Integer, ForeignKey("workspaces.id"), index=True, nullable=False)
+    name: Mapped[str] = mapped_column(String, nullable=False)
+    formula: Mapped[str] = mapped_column(Text, nullable=False)
+    format: Mapped[str] = mapped_column(String, nullable=False, default="number")
+    description: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    sort_order: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    is_active: Mapped[int] = mapped_column(Integer, nullable=False, default=1)
+    created_by_subject: Mapped[Optional[str]] = mapped_column(String, index=True, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, nullable=True)
 
 
 class AuditLog(Base):
@@ -388,11 +412,65 @@ class AuditLog(Base):
     """
     __tablename__ = "audit_log"
 
-    id = Column(Integer, primary_key=True, index=True)
-    workspace_id = Column(Integer, ForeignKey("workspaces.id"), index=True, nullable=False)
-    actor_subject = Column(String, index=True, nullable=False)  # who did it
-    action = Column(String, nullable=False, index=True)  # e.g. "optimization.execute"
-    target_type = Column(String, nullable=True)  # "optimization_plan", "connection", "membership"
-    target_id = Column(String, nullable=True)
-    payload = Column(JSONPortable, nullable=True)
-    created_at = Column(DateTime, default=datetime.utcnow, index=True)
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, index=True)
+    workspace_id: Mapped[int] = mapped_column(Integer, ForeignKey("workspaces.id"), index=True, nullable=False)
+    actor_subject: Mapped[str] = mapped_column(String, index=True, nullable=False)  # who did it
+    action: Mapped[str] = mapped_column(String, nullable=False, index=True)  # e.g. "optimization.execute"
+    target_type: Mapped[Optional[str]] = mapped_column(String, nullable=True)  # "optimization_plan", "connection", "membership"
+    target_id: Mapped[Optional[str]] = mapped_column(String, nullable=True)
+    payload: Mapped[Optional[Any]] = mapped_column(JSONPortable, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, index=True, nullable=True)
+
+
+class AdCreative(Base):
+    """One ad creative pulled from a platform, scoped to a workspace.
+
+    Ported from the standalone gallery's Firestore `ad_creatives` collection.
+    Identity is `(workspace_id, platform, ad_id)` — the Postgres equivalent of
+    that app's `{platform}_{ad_id}` document ID, plus the workspace dimension
+    it had no concept of.
+
+    The review_* columns are written ONLY by the review endpoint and are
+    deliberately excluded from the sync upsert's update set. That is what makes
+    a re-sync preserve reviews, and is the direct equivalent of the gallery's
+    `batch.set(..., merge=True)` fix.
+    """
+    __tablename__ = "ad_creatives"
+    __table_args__ = (
+        UniqueConstraint("workspace_id", "platform", "ad_id", name="uq_ad_creatives_ws_platform_ad"),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, index=True)
+    workspace_id: Mapped[int] = mapped_column(Integer, ForeignKey("workspaces.id"), index=True, nullable=False)
+    connection_id: Mapped[Optional[int]] = mapped_column(Integer, index=True, nullable=True)
+    platform: Mapped[str] = mapped_column(String, index=True, nullable=False)  # meta, google, microsoft
+    ad_id: Mapped[str] = mapped_column(String, index=True, nullable=False)
+    account_id: Mapped[Optional[str]] = mapped_column(String, index=True, nullable=True)
+
+    ad_name: Mapped[Optional[str]] = mapped_column(String, nullable=True)
+    headline: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    ad_text: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    campaign_name: Mapped[Optional[str]] = mapped_column(String, nullable=True)
+    ad_group_name: Mapped[Optional[str]] = mapped_column(String, nullable=True)
+    creative_type: Mapped[Optional[str]] = mapped_column(String, nullable=True)  # IMAGE, YOUTUBE_VIDEO, RESPONSIVE_SEARCH_AD, ...
+    group_type: Mapped[Optional[str]] = mapped_column(String, nullable=True)  # "Ad Group" / "Asset Group" (Google)
+    final_url: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+
+    # Where the asset came from on the platform. Meta signs these and they
+    # expire, which is why the bytes are mirrored rather than hotlinked.
+    source_asset_url: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    # Object path inside the creatives bucket / local asset dir. NULL when the
+    # creative is text-only or the download failed.
+    asset_path: Mapped[Optional[str]] = mapped_column(String, nullable=True)
+    asset_content_type: Mapped[Optional[str]] = mapped_column(String, nullable=True)
+    # Set instead of asset_path for assets that cannot be stored as files —
+    # YouTube video assets keep their embed URL, as in the source pipeline.
+    embed_url: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+
+    review_status: Mapped[Optional[str]] = mapped_column(String, index=True, nullable=True)  # keep, remove, change
+    review_comment: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    review_updated_at: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
+    review_updated_by: Mapped[Optional[str]] = mapped_column(String, nullable=True)
+
+    first_seen_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, nullable=True)
+    updated_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, index=True, nullable=True)

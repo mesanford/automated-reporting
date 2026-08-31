@@ -139,7 +139,7 @@ def create_kpi(
         actor_subject=user_id,
         action="kpi.create",
         target_type="custom_kpi",
-        target_id=k.id,
+        target_id=str(k.id),
         payload={"name": body.name, "formula": body.formula},
     )
     db.commit()

@@ -125,6 +125,14 @@ def _platform_client_id(platform: str) -> str:
         return direct
     if platform == "google":
         return get_secret("GOOGLE_ADS_CLIENT_ID")
+    if platform == "google_analytics":
+        # Same Google Cloud OAuth client can request additional scopes —
+        # reuse the Ads client if a dedicated GA4 one isn't configured.
+        return get_secret("GOOGLE_ADS_CLIENT_ID")
+    if platform in ("facebook_organic", "instagram_organic"):
+        return get_secret("META_CLIENT_ID")
+    if platform == "linkedin_organic":
+        return get_secret("LINKEDIN_CLIENT_ID")
     return ""
 
 
@@ -134,6 +142,12 @@ def _platform_client_secret(platform: str) -> str:
         return direct
     if platform == "google":
         return get_secret("GOOGLE_ADS_CLIENT_SECRET")
+    if platform == "google_analytics":
+        return get_secret("GOOGLE_ADS_CLIENT_SECRET")
+    if platform in ("facebook_organic", "instagram_organic"):
+        return get_secret("META_CLIENT_SECRET")
+    if platform == "linkedin_organic":
+        return get_secret("LINKEDIN_CLIENT_SECRET")
     return ""
 
 # Platform OAuth Config (In production, these come from environment variables)
@@ -142,6 +156,15 @@ PLATFORM_CONFIG = {
         "auth_url": "https://accounts.google.com/o/oauth2/v2/auth",
         "token_url": "https://oauth2.googleapis.com/token",
         "scopes": "https://www.googleapis.com/auth/adwords",
+        "extra_params": "&access_type=offline&prompt=consent&include_granted_scopes=true",
+    },
+    "google_analytics": {
+        "auth_url": "https://accounts.google.com/o/oauth2/v2/auth",
+        "token_url": "https://oauth2.googleapis.com/token",
+        # Read-only GA4 scope — deliberately separate from the Ads scope
+        # ("google" platform above) so a workspace can connect GA4 without
+        # granting Google Ads write access, and vice versa.
+        "scopes": "https://www.googleapis.com/auth/analytics.readonly",
         "extra_params": "&access_type=offline&prompt=consent&include_granted_scopes=true",
     },
     "meta": {
@@ -164,6 +187,27 @@ PLATFORM_CONFIG = {
         "token_url": "https://login.microsoftonline.com/common/oauth2/v2.0/token",
         "scopes": "openid offline_access https://ads.microsoft.com/msads.manage",
         "extra_params": "&response_mode=query"
+    },
+    "facebook_organic": {
+        "auth_url": "https://www.facebook.com/v18.0/dialog/oauth",
+        "token_url": "https://graph.facebook.com/v18.0/oauth/access_token",
+        "scopes": "pages_read_engagement,pages_show_list,public_profile",
+    },
+    "instagram_organic": {
+        "auth_url": "https://www.facebook.com/v18.0/dialog/oauth",
+        "token_url": "https://graph.facebook.com/v18.0/oauth/access_token",
+        "scopes": "instagram_basic,instagram_manage_insights,pages_read_engagement,pages_show_list,public_profile",
+    },
+    "linkedin_organic": {
+        "auth_url": "https://www.linkedin.com/oauth/v2/authorization",
+        "token_url": "https://www.linkedin.com/oauth/v2/accessToken",
+        # Dropped w_organization_social (write scope, not needed for read-only
+        # reporting) to reduce the permission ask during OAuth consent.
+        # NOTE: reading organizationAcls/organizationalEntityShareStatistics
+        # may require LinkedIn's Marketing Developer Platform / Community
+        # Management API product access beyond just these scopes — verify
+        # against a real LinkedIn developer app before relying on this.
+        "scopes": "r_organization_social,r_basicprofile",
     }
 }
 

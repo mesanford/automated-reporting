@@ -1,7 +1,7 @@
 import os
 import httpx
 import logging
-from typing import Dict, Any, List
+from typing import Dict, Any, List, Optional
 from app.models import OptimizationPlan
 
 logger = logging.getLogger(__name__)
@@ -9,7 +9,7 @@ logger = logging.getLogger(__name__)
 # To use this, you would set GOOGLE_CHAT_WEBHOOK_URL in .env
 GOOGLE_CHAT_WEBHOOK_URL = os.getenv("GOOGLE_CHAT_WEBHOOK_URL")
 
-def send_google_chat_message(webhook_url: str, text: str, cards: List[Dict[str, Any]] = None) -> bool:
+def send_google_chat_message(webhook_url: str, text: str, cards: Optional[List[Dict[str, Any]]] = None) -> bool:
     """
     Sends a message to a Google Chat webhook.
     """
@@ -17,7 +17,7 @@ def send_google_chat_message(webhook_url: str, text: str, cards: List[Dict[str, 
         logger.warning("Google Chat webhook URL not provided. Skipping notification.")
         return False
         
-    payload = {"text": text}
+    payload: Dict[str, Any] = {"text": text}
     if cards:
         payload["cards"] = cards
 
@@ -29,12 +29,22 @@ def send_google_chat_message(webhook_url: str, text: str, cards: List[Dict[str, 
         logger.error(f"Failed to send Google Chat message: {e}")
         return False
 
-def notify_new_optimizations(plans: List[OptimizationPlan], frontend_base_url: str = "http://localhost:5173") -> None:
+def notify_new_optimizations(
+    plans: List[OptimizationPlan],
+    frontend_base_url: str = "http://localhost:5173",
+    webhook_url: Optional[str] = None,
+) -> None:
     """
     Sends a Google Chat notification about new optimization plans.
+
+    `webhook_url` should be the workspace's `UserSettings.google_chat_webhook`
+    value (per-workspace, DB-persisted via PUT /settings). Falls back to the
+    global GOOGLE_CHAT_WEBHOOK_URL env var only if no per-workspace webhook
+    is configured, for backward compatibility with single-tenant deployments.
     """
-    if not GOOGLE_CHAT_WEBHOOK_URL:
-        logger.info("No GOOGLE_CHAT_WEBHOOK_URL configured, skipping new optimization notifications.")
+    resolved_webhook_url = webhook_url or GOOGLE_CHAT_WEBHOOK_URL
+    if not resolved_webhook_url:
+        logger.info("No Google Chat webhook configured (workspace settings or env var), skipping new optimization notifications.")
         return
 
     if not plans:
@@ -44,7 +54,7 @@ def notify_new_optimizations(plans: List[OptimizationPlan], frontend_base_url: s
     pending = [p for p in plans if p.status == "pending"]
     auto_approved = [p for p in plans if p.status == "approved" and p.is_automated]
 
-    text_lines = [f"🤖 *Automated Reporting: New Optimizations Generated*"]
+    text_lines = ["🤖 *Automated Reporting: New Optimizations Generated*"]
     
     if auto_approved:
         text_lines.append(f"\n✅ *{len(auto_approved)} Auto-approved Actions:*")
@@ -61,7 +71,7 @@ def notify_new_optimizations(plans: List[OptimizationPlan], frontend_base_url: s
         text_lines.append(f"\n👉 [Review Optimizations]({review_url})")
 
     message_text = "\n".join(text_lines)
-    send_google_chat_message(GOOGLE_CHAT_WEBHOOK_URL, message_text)
+    send_google_chat_message(resolved_webhook_url, message_text)
 
 def send_to_channel(channel: Dict[str, Any], subject: str, body: str) -> Dict[str, Any]:
     """Dispatch one notification to one channel. Returns delivery envelope.
@@ -84,7 +94,7 @@ def send_to_channel(channel: Dict[str, Any], subject: str, body: str) -> Dict[st
         except Exception as exc:  # noqa: BLE001
             return {"delivered": False, "channel": "slack", "error": str(exc)}
     if ctype == "email":
-        from app.services.email_service import _send_sendgrid, _from_address  # reuse
+        from app.services.email_service import _send_sendgrid  # reuse
         from app.services.secrets_manager import get_secret
 
         to = channel.get("to", "")

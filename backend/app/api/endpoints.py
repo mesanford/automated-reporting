@@ -81,7 +81,7 @@ async def _hydrate_microsoft_customer_map(
     try:
         refreshed_accounts = await connectors.discover_ad_accounts(
             platform="microsoft",
-            parent_account_id=connection.account_id,
+            parent_account_id=connection.account_id or "",
             query="",
             access_token=access_token,
             refresh_token=refresh_token,
@@ -232,7 +232,7 @@ def _build_report_markdown(report: models.Report) -> str:
             lines.append("")
             continue
 
-        grouped = {}
+        grouped: Dict[str, List[Dict[str, Any]]] = {}
         for row in level_rows:
             grouped.setdefault(row.get("platform", "unknown"), []).append(row)
 
@@ -268,19 +268,20 @@ async def upload_files(
     files: List[UploadFile] = File(...),
     comparison_files: List[UploadFile] = File(default=[]),
     db: Session = Depends(get_db),
-    user_id: str = Depends(get_current_user)
+    user_id: str = Depends(get_current_user),
+    workspace_id: int = Depends(get_current_workspace_id),
 ):
     dataframes = []
     for file in files:
         content = await file.read()
-        df = etl.process_csv(content, file.filename)
+        df = etl.process_csv(content, file.filename or "upload.csv")
         if not df.empty:
             dataframes.append(df)
 
     comparison_dataframes = []
     for file in comparison_files:
         content = await file.read()
-        df = etl.process_csv(content, file.filename)
+        df = etl.process_csv(content, file.filename or "upload.csv")
         if not df.empty:
             comparison_dataframes.append(df)
 
@@ -311,7 +312,8 @@ async def upload_files(
         platform_summary=aggregated["platformSummary"],
         top_performer=aggregated["topPerformer"],
         bottom_performer=aggregated["bottomPerformer"],
-        gemini_analysis=analysis
+        gemini_analysis=analysis,
+        used_mock_data=1 if aggregated.get("usedMockData") else 0,
     )
     db.add(new_report)
     db.commit()
@@ -332,7 +334,8 @@ async def upload_files(
         "platformSummary":    aggregated["platformSummary"],
         "topPerformer":       aggregated["topPerformer"],
         "bottomPerformer":    aggregated["bottomPerformer"],
-        "geminiAnalysis":     analysis
+        "geminiAnalysis":     analysis,
+        "usedMockData":       aggregated.get("usedMockData", False),
     }
 
 @router.get("/reports")
@@ -400,7 +403,7 @@ async def delete_connection(
         actor_subject=user_id,
         action="connection.delete",
         target_type="connection",
-        target_id=connection.id,
+        target_id=str(connection.id),
         payload={"platform": connection.platform, "account_id": connection.account_id},
     )
     db.delete(connection)
@@ -448,8 +451,8 @@ async def connection_diagnostics(
         else:
             try:
                 discovered = await connectors.discover_ad_accounts(
-                    platform=conn.platform,
-                    parent_account_id=conn.account_id,
+                    platform=conn.platform or "",
+                    parent_account_id=conn.account_id or "",
                     query="",
                     access_token=access_token,
                     refresh_token=refresh_token,
@@ -532,8 +535,8 @@ async def discover_connection_accounts(
                 "message": decrypt_error,
             }
         accounts = await connectors.discover_ad_accounts(
-            platform=connection.platform,
-            parent_account_id=connection.account_id,
+            platform=connection.platform or "",
+            parent_account_id=connection.account_id or "",
             query=query,
             access_token=access_token,
             refresh_token=refresh_token,
@@ -848,6 +851,7 @@ def _serialize_report(report: models.Report) -> dict:
         "bottomPerformer": report.bottom_performer,
         "geminiAnalysis": report.gemini_analysis,
         "created_at": report.created_at.isoformat() if report.created_at else None,
+        "usedMockData": bool(report.used_mock_data),
     }
 
 

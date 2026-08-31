@@ -96,7 +96,7 @@ async def _enqueue_cloud_tasks(
     name: str, payload: Dict[str, Any], *, delay_seconds: int
 ) -> str:
     from google.cloud import tasks_v2  # type: ignore
-    from google.protobuf import duration_pb2, timestamp_pb2  # type: ignore
+    from google.protobuf import timestamp_pb2  # type: ignore
     import datetime as _dt
 
     queue_path = os.getenv("CLOUD_TASKS_QUEUE", "")  # full resource path

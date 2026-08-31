@@ -63,11 +63,11 @@ def test_member_sees_their_private_and_workspace_shared(client, workspace, alice
         json={"name": "alice private"},
         headers=auth_headers(alice, ws_id),
     )
-    shared = client.post(
+    client.post(
         f"/api/workspaces/{ws_id}/views",
         json={"name": "team", "visibility": "workspace"},
         headers=auth_headers(alice, ws_id),
-    ).json()
+    )
     client.post(
         f"/api/workspaces/{ws_id}/views",
         json={"name": "bob private"},

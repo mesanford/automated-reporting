@@ -1,7 +1,7 @@
 import json
 from typing import Dict, Any, List
 from sqlalchemy.orm import Session
-from app.models import OptimizationPlan, OptimizationRule
+from app.models import OptimizationPlan
 from app.services.gemini import generate_optimizations
 import logging
 
@@ -49,13 +49,9 @@ def generate_and_store_optimizations(
         logger.warning("No recommendations returned or failed to parse.")
         return []
 
-    # 2. Fetch active rules for this workspace & platform
-    active_rules = db.query(OptimizationRule).filter(
-        OptimizationRule.workspace_id == workspace_id,
-        OptimizationRule.platform == platform,
-        OptimizationRule.is_active == 1
-    ).all()
-    auto_approve_types = {rule.change_type for rule in active_rules}
+    # 2. Auto-approval rule matching is intentionally skipped here — see the
+    # `is_automated = 0` note below. Re-introduce an OptimizationRule lookup
+    # if/when that feature is turned back on.
 
     # 3. Create OptimizationPlan records
     new_plans = []

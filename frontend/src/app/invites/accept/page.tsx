@@ -123,7 +123,7 @@ function Success({
       <div className="mx-auto mt-6 w-12 h-12 rounded-full bg-emerald-100 text-emerald-600 flex items-center justify-center">
         <Check size={22} />
       </div>
-      <h2 className="text-2xl font-black text-slate-900 mt-4">You're in</h2>
+      <h2 className="text-2xl font-black text-slate-900 mt-4">You&apos;re in</h2>
       <p className="text-sm text-slate-500 mt-2">
         Joined as <span className="font-semibold text-slate-700">{result.role}</span>. The new
         workspace is now active.
@@ -145,7 +145,7 @@ function ErrorView({ message }: { message: string }) {
       <div className="mx-auto mt-6 w-12 h-12 rounded-full bg-red-100 text-red-600 flex items-center justify-center">
         <AlertTriangle size={22} />
       </div>
-      <h2 className="text-2xl font-black text-slate-900 mt-4">Couldn't accept the invite</h2>
+      <h2 className="text-2xl font-black text-slate-900 mt-4">Couldn&apos;t accept the invite</h2>
       <p className="text-sm text-red-600 mt-2">{message}</p>
       <p className="text-xs text-slate-400 mt-3">
         Invites expire after 7 days and can only be used once. Ask the workspace owner to send a new one.

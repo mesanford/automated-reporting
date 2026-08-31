@@ -144,7 +144,7 @@ def create_budget(
         actor_subject=user_id,
         action="budget.create",
         target_type="budget",
-        target_id=b.id,
+        target_id=str(b.id),
         payload={"name": body.name, "scope_type": body.scope_type, "amount": body.amount},
     )
     db.commit()

@@ -37,7 +37,6 @@ def test_cached_rate_used_when_available(db, monkeypatch):
 
 
 def test_fetcher_called_and_cached_when_missing(db, monkeypatch):
-    from app import models
     from app.services import fx
 
     calls = []

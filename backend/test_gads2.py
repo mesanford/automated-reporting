@@ -14,7 +14,6 @@ async def test():
             start_date="2026-02-01", end_date="2026-03-31"
         )
         print(f"Conn {i} spend: {df['spend'].sum()}")
-        import pandas as pd
         print(f"Conn {i} row count: {len(df)}")
         # let's find dupes
         dupes = df.duplicated(subset=['date', 'campaign'])

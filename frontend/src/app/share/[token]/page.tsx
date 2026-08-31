@@ -17,6 +17,7 @@ interface ShareResponse {
     platformSummary: Array<Record<string, unknown>>;
     campaignSummary: Array<Record<string, unknown>>;
     geminiAnalysis: string | null;
+    usedMockData?: boolean;
   };
   share: {
     expires_at: string;
@@ -95,6 +96,17 @@ export default function PublicSharePage() {
           Viewed {state.data.share.view_count} time{state.data.share.view_count === 1 ? '' : 's'}
         </div>
       </div>
+
+      {r.usedMockData && (
+        <div className="flex items-start gap-3 p-4 mb-6 bg-amber-50 border border-amber-200 rounded-2xl">
+          <AlertTriangle size={20} className="text-amber-600 mt-0.5 flex-shrink-0" />
+          <div className="text-sm text-amber-900">
+            <span className="font-black uppercase tracking-wide">Includes fabricated demo data.</span>{' '}
+            At least one connected channel has no live API integration yet, so its numbers are
+            randomly generated sample data, not real performance figures.
+          </div>
+        </div>
+      )}
 
       {/* Headline scorecards */}
       <section className="grid grid-cols-2 sm:grid-cols-4 gap-3 mb-8">

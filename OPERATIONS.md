@@ -48,11 +48,18 @@ shell access to the container.
 | `INVITE_FROM_EMAIL`            | With SENDGRID      | Verified sender. Without verification, SendGrid rejects.                                 |
 | `INVITE_FROM_NAME`             | Optional           | Display name, default `Antigravity`.                                                     |
 | `GOOGLE_API_KEY`               | Prod               | Gemini API key for analysis + conversational analytics.                                  |
-| `GOOGLE_ADS_*`                 | Per workspace      | Google Ads OAuth client + developer token.                                               |
-| `META_CLIENT_*`                | Per workspace      | Meta OAuth client.                                                                       |
-| `LINKEDIN_CLIENT_*`            | Per workspace      | LinkedIn OAuth client.                                                                   |
+| `GOOGLE_ADS_*`                 | Per workspace      | Google Ads OAuth client + developer token. Also backs `google_analytics` (GA4) unless `GOOGLE_ANALYTICS_CLIENT_ID`/`_SECRET` are set separately — see below. |
+| `GOOGLE_ANALYTICS_CLIENT_ID` / `_SECRET` | Optional  | Dedicated OAuth client for GA4, if you don't want to reuse the Google Ads one. |
+| `META_CLIENT_*`                | Per workspace      | Meta OAuth client. Shared by `meta` (Ads), `facebook_organic`, and `instagram_organic`.  |
+| `LINKEDIN_CLIENT_*`            | Per workspace      | LinkedIn OAuth client. Shared by `linkedin` (Ads) and `linkedin_organic`.                |
 | `TIKTOK_CLIENT_*`              | Per workspace      | TikTok OAuth client.                                                                     |
 | `MICROSOFT_CLIENT_*`           | Per workspace      | Microsoft Ads OAuth client + developer token.                                            |
+| `DEMO_MODE`                    | Dev/staging only    | `1` allows the organic connectors (`facebook_organic`, `instagram_organic`, `linkedin_organic`) to fall back to fabricated sample data when no access token is present. **Hard-refused in production regardless of this flag** — see `app/services/connectors.py::_demo_mode_allowed()`. |
+| `CREATIVES_BUCKET`             | Optional           | GCS bucket for mirrored ad-creative assets. Defaults to `<GCP_PROJECT_ID>.firebasestorage.app`; falls back to a local directory when no project is resolvable. |
+| `CREATIVES_LOCAL_DIR`          | Dev only           | Directory for mirrored creative assets when no bucket is in play. Default `./.creative-assets`. |
+| `CREATIVES_FORCE_LOCAL`        | Dev only           | `1` forces the local asset backend even when a GCP project is set.                       |
+| `CREATIVES_MAX_ASSET_BYTES`    | Optional           | Per-asset download cap, default 25 MiB. Oversized assets are skipped, not truncated.     |
+| `CREATIVES_SIGNED_URL_REDIRECT`| Optional           | `1` makes `GET /api/.../creatives/{id}/asset` 302 to a signed GCS URL instead of streaming. Only turn this on once the bucket's CORS config allows the frontend origin. |
 
 Frontend equivalents (set in `frontend/.env.local`):
 
@@ -215,10 +222,44 @@ anyway), this costs ~$10/mo per region.
 
 `.github/workflows/ci.yml` runs on push + PR:
 
-- Backend: install deps, `compileall`, `alembic upgrade head` against a
-  temp SQLite, `pytest`.
+- Backend: install deps, `ruff check` (blocking), `mypy` (blocking),
+  `pip-audit` against `requirements.txt` (blocking), `compileall`,
+  `alembic upgrade head` against a temp SQLite, `pytest`.
 - Frontend: install, lint, `tsc --noEmit`.
 
 The Alembic step catches migration drift; pytest catches workspace/role/audit
 regressions. The frontend typecheck catches API shape changes if the
-backend ever breaks the documented response envelopes.
+backend ever breaks the documented response envelopes. `pip-audit` fails the
+build on a known CVE in a pinned dependency.
+
+**mypy is a blocking gate.** `app/models.py` was migrated from SQLAlchemy's
+legacy `Column()` declarative style to `Mapped[]`/`mapped_column()`, which
+fixed the dominant source of noise (mypy previously saw every model
+attribute as `Column[T]` instead of `T`, producing hundreds of
+false-positive-shaped errors). The remaining real errors found after that
+migration (missing `Optional` guards on nullable `Connection`/`SyncJob`
+fields, a mistyped `datetime.date` annotation in `_resolve_sync_window`,
+httpx `params` dict typing, etc.) have been fixed at the root cause. Any new
+mypy error now fails the build — keep it that way; if a genuinely
+unavoidable third-party stub mismatch comes up (see the `# type:
+ignore[arg-type]` on the slowapi exception handler in `main.py`), suppress
+it narrowly with a comment explaining why, rather than reverting to
+advisory mode.
+
+### Local SQLite schema drift (`ensure_sqlite_schema_compat`)
+
+`app/database.py::ensure_sqlite_schema_compat()` patches a short list of
+columns onto a *local* SQLite dev DB if they're missing, because SQLite's
+`create_all()` won't alter existing tables. It's a local-dev convenience
+only — it never runs against Postgres (staging/prod), and CI's fresh
+temp-SQLite run doesn't exercise it either, since Alembic already creates
+those columns correctly there.
+
+The risk: if someone adds a field to `models.py` and forgets to write an
+Alembic migration for it, this function will silently patch their local
+dev DB and everything will *look* fine locally — while Postgres in
+staging/prod stays missing that column. As of this pass, every time this
+function actually patches a column it logs a `WARNING` naming the column,
+specifically so a forgotten migration surfaces instead of going unnoticed.
+If you see that warning in local dev logs, check `migrations/versions/`
+before assuming it's harmless.

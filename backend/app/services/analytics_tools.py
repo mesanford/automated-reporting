@@ -7,7 +7,7 @@ lives inside Report JSON columns populated by services/etl.py.
 from __future__ import annotations
 
 from datetime import datetime
-from typing import Any, Dict, List, Optional
+from typing import Any, Callable, Dict, List, Optional
 
 from sqlalchemy.orm import Session
 
@@ -164,7 +164,7 @@ def aggregate_across_reports(
             key = str(row.get(group_by) or row.get("platform") or "unknown")
             _add(key, row)
 
-    groups = []
+    groups: List[Dict[str, Any]] = []
     for key, b in buckets.items():
         spend = b["spend"]
         impressions = b["impressions"]
@@ -282,7 +282,7 @@ def list_connections(db: Session, workspace_id: int) -> List[Dict[str, Any]]:
 
 # ── Tool dispatch table ──────────────────────────────────────────────────────
 
-TOOL_FUNCTIONS = {
+TOOL_FUNCTIONS: Dict[str, Callable[..., Any]] = {
     "list_reports": list_reports,
     "get_report_summary": get_report_summary,
     "top_campaigns": top_campaigns,

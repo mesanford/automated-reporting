@@ -19,7 +19,7 @@ from __future__ import annotations
 
 import os
 from dataclasses import dataclass, field
-from typing import List, Literal
+from typing import List, Literal, Mapping
 
 Severity = Literal["error", "warning", "info"]
 
@@ -56,12 +56,12 @@ class PreflightError(RuntimeError):
     """Raised on production with one or more error-level findings."""
 
 
-def is_production(env: dict | None = None) -> bool:
+def is_production(env: Mapping[str, str] | None = None) -> bool:
     env = env if env is not None else os.environ
     return env.get("APP_ENV", "").strip().lower() == "production"
 
 
-def run_preflight(env: dict | None = None) -> PreflightReport:
+def run_preflight(env: Mapping[str, str] | None = None) -> PreflightReport:
     """Inspect environment, return a report. Caller decides whether to raise."""
     env = env if env is not None else os.environ
     prod = is_production(env)
@@ -164,7 +164,7 @@ def run_preflight(env: dict | None = None) -> PreflightReport:
     return report
 
 
-def run_or_raise(env: dict | None = None) -> PreflightReport:
+def run_or_raise(env: Mapping[str, str] | None = None) -> PreflightReport:
     """Run preflight, raise PreflightError on production errors, log warnings.
 
     Called at startup from `main.py`. The dev path is forgiving — warnings

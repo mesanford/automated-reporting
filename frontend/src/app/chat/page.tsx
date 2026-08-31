@@ -1,6 +1,6 @@
 "use client";
 
-import React, { useEffect, useRef, useState } from 'react';
+import React, { useCallback, useEffect, useRef, useState } from 'react';
 import Link from 'next/link';
 import ReactMarkdown from 'react-markdown';
 import {
@@ -56,9 +56,19 @@ export default function ChatPage() {
   const [error, setError] = useState<string | null>(null);
   const scrollRef = useRef<HTMLDivElement>(null);
 
+  const loadConversations = useCallback(async () => {
+    try {
+      const data = await apiJson<ConversationSummary[]>('/api/chat/conversations');
+      setConversations(data);
+      if (activeId == null && data.length > 0) setActiveId(data[0].id);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Failed to load conversations');
+    }
+  }, [activeId]);
+
   useEffect(() => {
     void loadConversations();
-  }, []);
+  }, [loadConversations]);
 
   useEffect(() => {
     if (activeId != null) {
@@ -71,16 +81,6 @@ export default function ChatPage() {
   useEffect(() => {
     scrollRef.current?.scrollTo({ top: scrollRef.current.scrollHeight, behavior: 'smooth' });
   }, [messages, streaming]);
-
-  async function loadConversations() {
-    try {
-      const data = await apiJson<ConversationSummary[]>('/api/chat/conversations');
-      setConversations(data);
-      if (activeId == null && data.length > 0) setActiveId(data[0].id);
-    } catch (err) {
-      setError(err instanceof Error ? err.message : 'Failed to load conversations');
-    }
-  }
 
   async function loadMessages(id: number) {
     try {
@@ -491,11 +491,11 @@ function InlineChart({ spec }: { spec: ChartSpec }) {
 }
 
 function ToolCallCard({ name, args, result }: { name: string; args?: unknown; result?: unknown }) {
+  const [open, setOpen] = useState(false);
   // If this is a render_chart result, draw the chart instead of the JSON dump.
   if (name === 'render_chart' && isChartSpec(result)) {
     return <InlineChart spec={result} />;
   }
-  const [open, setOpen] = useState(false);
   return (
     <div className="border border-slate-100 rounded-xl bg-slate-50 text-xs">
       <button

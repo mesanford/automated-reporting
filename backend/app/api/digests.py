@@ -1,7 +1,6 @@
 """Digest subscription CRUD + internal scheduler tick."""
 from __future__ import annotations
 
-from datetime import datetime
 from typing import Optional
 
 from fastapi import APIRouter, Depends, Header, HTTPException, Request
@@ -118,7 +117,7 @@ def subscribe(
         actor_subject=user_id,
         action="digest.subscribe",
         target_type="digest_subscription",
-        target_id=sub.id,
+        target_id=str(sub.id),
         payload={"cadence": body.cadence, "email": email},
     )
     db.commit()
@@ -150,7 +149,7 @@ def unsubscribe(
         actor_subject=user_id,
         action="digest.unsubscribe",
         target_type="digest_subscription",
-        target_id=sub.id,
+        target_id=str(sub.id),
         payload={},
     )
     db.commit()
