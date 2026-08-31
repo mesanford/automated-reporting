@@ -7,7 +7,7 @@ python-dotenv==1.2.2
 sqlalchemy==2.0.51
 psycopg2-binary==2.9.12
 pg8000==1.31.5
-cryptography==49.0.0
+cryptography==50.0.0
 httpx==0.28.1
 google-ads==31.1.0
 google-analytics-data==0.20.0
