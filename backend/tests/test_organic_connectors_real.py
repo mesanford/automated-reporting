@@ -38,6 +38,25 @@ class _RoutedTransport(httpx.MockTransport):
         return httpx.Response(404, json={"error": {"message": f"no mock route for {path}"}})
 
 
+@pytest.fixture(autouse=True)
+def meta_app_secret(monkeypatch):
+    """Supply a fixed Meta app secret for the whole module.
+
+    Every Meta Graph call here signs its request with an appsecret_proof, so
+    the connector needs META_CLIENT_SECRET. Without this the tests silently
+    inherited whatever sat in a developer's backend/.env — which is exactly
+    why they passed locally and failed in CI, where no such file exists.
+
+    get_secret() memoises, so the cache is cleared on both sides of the test.
+    """
+    from app.services import secrets_manager
+
+    monkeypatch.setenv("META_CLIENT_SECRET", "test-meta-app-secret")
+    secrets_manager.invalidate_cache("META_CLIENT_SECRET")
+    yield
+    secrets_manager.invalidate_cache("META_CLIENT_SECRET")
+
+
 @pytest.fixture()
 def patch_async_client(monkeypatch):
     """Returns a function that, given a routes dict, makes every
