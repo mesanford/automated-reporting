@@ -197,8 +197,22 @@ def view_public_share(token: str, db: Session = Depends(get_db)):
     link.last_viewed_at = datetime.utcnow()
     db.commit()
 
+    # Currency and workspace name so the printable view can label figures the
+    # same way the authenticated view does. Both describe the report the
+    # recipient was deliberately given; nothing else about the workspace is
+    # exposed here.
+    workspace = (
+        db.query(models.Workspace)
+        .filter(models.Workspace.id == link.workspace_id)
+        .first()
+    )
+
     return {
         "report": _serialize_report(report),
+        "workspace": {
+            "name": workspace.name if workspace else None,
+            "base_currency": (workspace.base_currency if workspace else None) or "USD",
+        },
         "share": {
             "expires_at": link.expires_at.isoformat(),
             "view_count": link.view_count,

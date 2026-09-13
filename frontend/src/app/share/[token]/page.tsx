@@ -3,7 +3,8 @@
 import React, { useEffect, useState } from 'react';
 import { useParams } from 'next/navigation';
 import ReactMarkdown from 'react-markdown';
-import { AlertTriangle, FileText, Lock } from 'lucide-react';
+import Link from 'next/link';
+import { AlertTriangle, Download, FileText, Lock } from 'lucide-react';
 
 const API_BASE = process.env.NEXT_PUBLIC_API_BASE_URL ?? 'http://localhost:8000';
 
@@ -18,6 +19,10 @@ interface ShareResponse {
     campaignSummary: Array<Record<string, unknown>>;
     geminiAnalysis: string | null;
     usedMockData?: boolean;
+  };
+  workspace?: {
+    name: string | null;
+    base_currency: string | null;
   };
   share: {
     expires_at: string;
@@ -70,8 +75,9 @@ export default function PublicSharePage() {
   if (state.kind === 'notfound') return <ErrorState icon={<AlertTriangle size={28} />} title="Link not found" message="The recipient may have a typo, or the link was never minted." />;
 
   const r = state.data.report;
+  const ccy = state.data.workspace?.base_currency ?? 'USD';
   const fmt = (n: number | null | undefined, unit: string = '') =>
-    n == null ? '—' : `${unit}${n.toLocaleString()}`;
+    n == null ? '—' : unit === '$' ? `${ccy} ${n.toLocaleString()}` : `${unit}${n.toLocaleString()}`;
 
   return (
     <Shell>
@@ -90,10 +96,23 @@ export default function PublicSharePage() {
             <p className="text-sm text-slate-500">vs. {r.priorPeriodLabel}</p>
           )}
         </div>
-        <div className="text-xs text-slate-400 text-right">
-          Expires {new Date(state.data.share.expires_at).toLocaleDateString()}
-          <br />
-          Viewed {state.data.share.view_count} time{state.data.share.view_count === 1 ? '' : 's'}
+        <div className="flex items-center gap-3">
+          {/* Same token, print-optimised layout. Opens in a new tab so the
+              recipient keeps this page after the print dialog closes. */}
+          <Link
+            href={`/share/${params.token}/print`}
+            target="_blank"
+            rel="noopener noreferrer"
+            className="inline-flex items-center gap-2 px-4 py-2 rounded-lg bg-blue-600 text-white text-sm font-bold hover:bg-blue-700"
+          >
+            <Download size={16} />
+            Download PDF
+          </Link>
+          <div className="text-xs text-slate-400 text-right">
+            Expires {new Date(state.data.share.expires_at).toLocaleDateString()}
+            <br />
+            Viewed {state.data.share.view_count} time{state.data.share.view_count === 1 ? '' : 's'}
+          </div>
         </div>
       </div>
 

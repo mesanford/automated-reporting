@@ -98,6 +98,26 @@ def test_public_view_returns_report_without_auth(client, workspace_and_report, a
     assert "expires_at" in body["share"]
 
 
+def test_public_view_includes_currency_for_the_printable_view(
+    client, workspace_and_report, alice
+):
+    """The printable/PDF view has no workspace context of its own, so the public
+    payload has to carry the currency or money figures would silently render as
+    USD for every recipient."""
+    ws_id, report_id = workspace_and_report
+    token = client.post(
+        f"/api/workspaces/{ws_id}/reports/{report_id}/share",
+        json={"expires_in_days": 7},
+        headers=auth_headers(alice, ws_id),
+    ).json()["token"]
+
+    body = client.get(f"/api/share/{token}").json()
+    assert "workspace" in body
+    assert body["workspace"]["base_currency"]  # never null/empty
+    # Only the two fields the printable cover needs are exposed.
+    assert set(body["workspace"].keys()) == {"name", "base_currency"}
+
+
 def test_public_view_bumps_view_counter(client, db, workspace_and_report, alice):
     ws_id, report_id = workspace_and_report
     token = client.post(
