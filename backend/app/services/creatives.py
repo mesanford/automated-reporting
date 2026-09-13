@@ -259,7 +259,10 @@ _GADS_ASSET_GROUP_QUERY = """
 """
 
 
-def _google_credentials(refresh_token: Optional[str]) -> Dict[str, Any]:
+def _google_credentials(
+    refresh_token: Optional[str],
+    login_customer_id: Optional[str] = None,
+) -> Dict[str, Any]:
     token = str(refresh_token or "").strip()
     if not token:
         raise ConnectorConfigError("Missing Google Ads refresh token for this connection.")
@@ -270,13 +273,17 @@ def _google_credentials(refresh_token: Optional[str]) -> Dict[str, Any]:
         "refresh_token": token,
         "use_proto_plus": True,
     }
-    login_customer_id = os.getenv("GOOGLE_ADS_LOGIN_CUSTOMER_ID", "").strip()
+    login_customer_id = str(login_customer_id or "").strip()
     if login_customer_id:
         credentials["login_customer_id"] = _strip_google_customer_id(login_customer_id)
     return credentials
 
 
-def _fetch_google_creatives_sync(account_id: str, refresh_token: Optional[str]) -> List[Dict[str, Any]]:
+def _fetch_google_creatives_sync(
+    account_id: str,
+    refresh_token: Optional[str],
+    login_customer_id: Optional[str] = None,
+) -> List[Dict[str, Any]]:
     from google.ads.googleads.client import GoogleAdsClient
     from google.ads.googleads.errors import GoogleAdsException
 
@@ -284,7 +291,9 @@ def _fetch_google_creatives_sync(account_id: str, refresh_token: Optional[str]) 
     if not customer_id:
         raise ConnectorConfigError(f"Invalid Google account/customer ID: {account_id}")
 
-    client = GoogleAdsClient.load_from_dict(_google_credentials(refresh_token))
+    client = GoogleAdsClient.load_from_dict(
+        _google_credentials(refresh_token, login_customer_id)
+    )
     service = client.get_service("GoogleAdsService")
 
     records: List[Dict[str, Any]] = []
@@ -366,8 +375,14 @@ def _google_row_to_record(row: Any, group_type: str, account_id: str) -> Optiona
     }
 
 
-async def fetch_google_creatives(account_id: str, refresh_token: Optional[str]) -> List[Dict[str, Any]]:
-    return await asyncio.to_thread(_fetch_google_creatives_sync, account_id, refresh_token)
+async def fetch_google_creatives(
+    account_id: str,
+    refresh_token: Optional[str],
+    login_customer_id: Optional[str] = None,
+) -> List[Dict[str, Any]]:
+    return await asyncio.to_thread(
+        _fetch_google_creatives_sync, account_id, refresh_token, login_customer_id
+    )
 
 
 # ── Microsoft Ads ────────────────────────────────────────────────────────────
@@ -412,21 +427,24 @@ def _fetch_microsoft_creatives_sync(
     persisted on the workspace's Connection row instead, so rotation is
     per-workspace and cannot clobber another app's credential.
     """
-    import pandas as pd
-    from bingads.authorization import AuthorizationData
-    from bingads.v13.bulk import BulkServiceManager, DownloadParameters
-
+    # Validate the per-connection inputs before importing the SDK, so a
+    # misconfigured connection fails with a useful message rather than an
+    # unrelated ImportError.
     if not access_token:
         raise ConnectorConfigError("Missing Microsoft access token for this connection.")
 
     developer_token = _required_env("MICROSOFT_DEVELOPER_TOKEN")
     client_id = _required_env("MICROSOFT_CLIENT_ID")
-    customer_id = (microsoft_customer_id or "").strip() or os.getenv("MICROSOFT_CUSTOMER_ID", "").strip()
+    customer_id = (microsoft_customer_id or "").strip()
     if not customer_id:
         raise ConnectorConfigError(
-            "Missing Microsoft customer ID for this account. Re-discover the Microsoft ad accounts "
-            "and re-save the account selection."
+            "Missing Microsoft customer ID for this account. Re-discover the Microsoft ad "
+            "accounts and re-save the account selection for this connection."
         )
+
+    import pandas as pd
+    from bingads.authorization import AuthorizationData
+    from bingads.v13.bulk import BulkServiceManager, DownloadParameters
     try:
         account_id_int = int(str(account_id).strip())
         customer_id_int = int(customer_id)
@@ -547,6 +565,7 @@ async def fetch_creatives(
     access_token: Optional[str] = None,
     refresh_token: Optional[str] = None,
     microsoft_customer_id: Optional[str] = None,
+    google_login_customer_id: Optional[str] = None,
 ) -> tuple[List[Dict[str, Any]], Optional[str]]:
     """Fetch creatives for one account.
 
@@ -558,7 +577,9 @@ async def fetch_creatives(
     if key == "meta":
         return await fetch_meta_creatives(account_id, access_token or ""), None
     if key == "google":
-        return await fetch_google_creatives(account_id, refresh_token), None
+        return await fetch_google_creatives(
+            account_id, refresh_token, google_login_customer_id
+        ), None
     if key == "microsoft":
         return await fetch_microsoft_creatives(
             account_id, access_token or "", refresh_token, microsoft_customer_id

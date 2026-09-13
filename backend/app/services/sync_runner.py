@@ -107,9 +107,20 @@ async def run_sync(
                 "Sync failed for microsoft "
                 f"(connection {connection_id}): missing customer_id for selected account(s) "
                 + ", ".join(missing)
-                + ". Re-discover Microsoft accounts and re-save the selection, "
-                "or set MICROSOFT_CUSTOMER_ID for a single customer context."
+                + ". Re-discover Microsoft accounts and re-save the selection "
+                "for this connection."
             )
+
+    # Each account may be reached through a different manager account, so resolve
+    # login-customer-id per account, falling back to the connection's own context.
+    google_login_map = {
+        str(a.get("id")): str(a.get("login_customer_id") or "")
+        for a in (connection.available_accounts or [])
+    }
+    connection_login_customer_id = str(getattr(connection, "login_customer_id", "") or "")
+
+    def _google_login_for(account_id: Any) -> str:
+        return google_login_map.get(str(account_id), "") or connection_login_customer_id
 
     dataframes: List[Any] = []
     comparison_dataframes: List[Any] = []
@@ -121,6 +132,7 @@ async def run_sync(
                 access_token=access_token,
                 refresh_token=refresh_token,
                 microsoft_customer_id=microsoft_customer_map.get(str(account_id), ""),
+                google_login_customer_id=_google_login_for(account_id),
                 start_date=sync_start_date,
                 end_date=sync_end_date,
             )
@@ -134,6 +146,7 @@ async def run_sync(
                     access_token=access_token,
                     refresh_token=refresh_token,
                     microsoft_customer_id=microsoft_customer_map.get(str(account_id), ""),
+                    google_login_customer_id=_google_login_for(account_id),
                     start_date=comparison_start_date,
                     end_date=comparison_end_date,
                 )
@@ -278,6 +291,19 @@ async def run_sync_all(
         access_token = _try_decrypt(conn.access_token or "")
         refresh_token = _try_decrypt(conn.refresh_token or "")
 
+        conn_google_login_map = {
+            str(a.get("id")): str(a.get("login_customer_id") or "")
+            for a in (conn.available_accounts or [])
+        }
+        conn_login_customer_id = str(getattr(conn, "login_customer_id", "") or "")
+
+        def _conn_google_login_for(
+            account_id: Any,
+            _map: Dict[str, str] = conn_google_login_map,
+            _fallback: str = conn_login_customer_id,
+        ) -> str:
+            return _map.get(str(account_id), "") or _fallback
+
         if conn_platform == "microsoft" and accounts_to_sync:
             microsoft_customer_map = await _hydrate_microsoft_customer_map(
                 connection=conn,
@@ -296,8 +322,8 @@ async def run_sync_all(
                     "Sync failed for microsoft "
                     f"(connection {conn.id}): missing customer_id for selected account(s) "
                     + ", ".join(missing)
-                    + ". Re-discover Microsoft accounts and re-save the selection, "
-                    "or set MICROSOFT_CUSTOMER_ID for a single customer context."
+                    + ". Re-discover Microsoft accounts and re-save the selection "
+                    "for this connection."
                 )
 
         connection_had_data = False
@@ -314,6 +340,7 @@ async def run_sync_all(
                     access_token=access_token,
                     refresh_token=refresh_token,
                     microsoft_customer_id=microsoft_customer_map.get(str(account_id), ""),
+                    google_login_customer_id=_conn_google_login_for(account_id),
                     start_date=sync_start_date,
                     end_date=sync_end_date,
                 )
@@ -329,6 +356,7 @@ async def run_sync_all(
                         access_token=access_token,
                         refresh_token=refresh_token,
                         microsoft_customer_id=microsoft_customer_map.get(str(account_id), ""),
+                        google_login_customer_id=_conn_google_login_for(account_id),
                         start_date=comparison_start_date,
                         end_date=comparison_end_date,
                     )

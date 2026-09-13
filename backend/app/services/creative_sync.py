@@ -138,6 +138,12 @@ async def sync_connection_creatives(
         str(a.get("id")): str(a.get("customer_id", ""))
         for a in (connection.available_accounts or [])
     }
+    # Same per-connection manager context the performance sync uses.
+    google_login_map = {
+        str(a.get("id")): str(a.get("login_customer_id") or "")
+        for a in (connection.available_accounts or [])
+    }
+    connection_login_customer_id = str(getattr(connection, "login_customer_id", "") or "")
 
     created = 0
     updated = 0
@@ -154,6 +160,9 @@ async def sync_connection_creatives(
             access_token=access_token,
             refresh_token=refresh_token,
             microsoft_customer_id=customer_map.get(str(account_id)),
+            google_login_customer_id=(
+                google_login_map.get(str(account_id), "") or connection_login_customer_id
+            ),
         )
 
         # Microsoft rotates the refresh token on nearly every exchange. Persist

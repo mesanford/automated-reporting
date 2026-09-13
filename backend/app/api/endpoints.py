@@ -114,7 +114,9 @@ async def _hydrate_microsoft_customer_map(
         if str(acc.get("customer_id", "")).strip()
     }
     inferred_customer_id = next(iter(known_customer_ids)) if len(known_customer_ids) == 1 else ""
-    fallback_customer_id = inferred_customer_id or os.getenv("MICROSOFT_CUSTOMER_ID", "").strip()
+    # Inferred from this connection's own accounts only. A process-wide fallback
+    # would attach one tenant's customer context to another tenant's accounts.
+    fallback_customer_id = inferred_customer_id
     if fallback_customer_id:
         for account_id in unresolved:
             existing = merged_by_id.get(str(account_id), {})
@@ -480,7 +482,7 @@ async def connection_diagnostics(
                     issues.append(
                         "Missing Microsoft customer_id for selected account(s): "
                         + ", ".join(str(x) for x in missing_customer)
-                        + ". Re-discover and re-save account selection or set MICROSOFT_CUSTOMER_ID."
+                        + ". Re-discover and re-save the account selection for this connection."
                     )
                     level = "warning" if level == "ok" else level
 

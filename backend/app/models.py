@@ -81,6 +81,10 @@ class Connection(Base):
     account_name: Mapped[Optional[str]] = mapped_column(String, nullable=True)
     access_token: Mapped[Optional[str]] = mapped_column(String, nullable=True)
     refresh_token: Mapped[Optional[str]] = mapped_column(String, nullable=True)
+    # Manager/customer context this connection acts through (Google Ads
+    # login-customer-id). Per-connection, never process-wide: two tenants
+    # reaching the same API need different manager contexts.
+    login_customer_id: Mapped[Optional[str]] = mapped_column(String, nullable=True)
     expires_at: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
     is_active: Mapped[int] = mapped_column(Integer, default=1, nullable=True)
     available_accounts: Mapped[Optional[Any]] = mapped_column(JSONPortable, nullable=True)

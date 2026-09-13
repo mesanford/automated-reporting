@@ -472,11 +472,22 @@ async def _discover_tiktok_accounts(access_token: str) -> List[Dict[str, Any]]:
     return accounts
 
 
-async def _discover_google_accounts(refresh_token: Optional[str]) -> List[Dict[str, Any]]:
+async def _discover_google_accounts(
+    refresh_token: Optional[str],
+    login_customer_id: Optional[str] = None,
+) -> List[Dict[str, Any]]:
+    """Accounts the *authorizing user* can reach.
+
+    The developer token and OAuth client identify this application and are shared
+    across every tenant. The refresh token and the manager (login-customer-id)
+    context identify one particular connection and must always be supplied by the
+    caller -- never read from the environment, which would silently run one
+    tenant's sync against whatever account the host happens to be configured for.
+    """
     developer_token = _required_env("GOOGLE_ADS_DEVELOPER_TOKEN")
     client_id = _required_env("GOOGLE_ADS_CLIENT_ID")
     client_secret = _required_env("GOOGLE_ADS_CLIENT_SECRET")
-    final_refresh_token = str(refresh_token or os.getenv("GOOGLE_ADS_REFRESH_TOKEN", "")).strip()
+    final_refresh_token = str(refresh_token or "").strip()
     if not final_refresh_token:
         raise ConnectorConfigError("Missing Google Ads refresh token for this connection.")
 
@@ -488,7 +499,7 @@ async def _discover_google_accounts(refresh_token: Optional[str]) -> List[Dict[s
         "use_proto_plus": True,
     }
 
-    login_customer_id = os.getenv("GOOGLE_ADS_LOGIN_CUSTOMER_ID", "").strip()
+    login_customer_id = str(login_customer_id or "").strip()
     if login_customer_id:
         credentials["login_customer_id"] = _strip_google_customer_id(login_customer_id)
 
@@ -516,6 +527,11 @@ async def _discover_google_accounts(refresh_token: Optional[str]) -> List[Dict[s
         if cid and cid not in manager_seed_ids:
             manager_seed_ids.append(cid)
 
+    # Which manager each child account was reached through. Calls against a child
+    # must carry that manager as login-customer-id, so it is recorded per account
+    # rather than assumed to be the same for the whole installation.
+    manager_of: Dict[str, str] = {}
+
     for parent_id in manager_seed_ids:
         try:
             resp = google_ads_service.search(customer_id=parent_id, query=client_query)
@@ -523,6 +539,8 @@ async def _discover_google_accounts(refresh_token: Optional[str]) -> List[Dict[s
                 cid = str(getattr(row.customer_client, "id", "") or "")
                 if not cid:
                     continue
+                if cid != parent_id:
+                    manager_of.setdefault(cid, parent_id)
                 client_name_map[cid] = {
                     "name": (row.customer_client.descriptive_name or "").strip(),
                     "manager": bool(row.customer_client.manager),
@@ -613,6 +631,8 @@ async def _discover_google_accounts(refresh_token: Optional[str]) -> List[Dict[s
             "name": name,
             "status": status,
             "currency": currency,
+            # "" means the account is directly accessible and needs no manager header.
+            "login_customer_id": manager_of.get(customer_id, ""),
         })
     return accounts
 
@@ -707,10 +727,12 @@ def _normalize_ms_customer_payload(raw_customers: Any) -> List[Dict[str, str]]:
 def _discover_microsoft_accounts_sdk_sync(
     access_token: str,
     refresh_token: Optional[str],
+    customer_id: Optional[str] = None,
 ) -> List[Dict[str, Any]]:
     developer_token = _required_env("MICROSOFT_DEVELOPER_TOKEN")
     client_id = _required_env("MICROSOFT_CLIENT_ID")
-    configured_customer = os.getenv("MICROSOFT_CUSTOMER_ID", "").strip()
+    # Per-connection, for the same reason as Google's login-customer-id above.
+    configured_customer = str(customer_id or "").strip()
 
     oauth = _build_microsoft_oauth(client_id, access_token, refresh_token)
     _refresh_microsoft_oauth_if_possible(oauth, refresh_token)
@@ -964,10 +986,16 @@ async def _discover_microsoft_accounts_soap(access_token: str) -> List[Dict[str,
     return accounts
 
 
-async def _discover_microsoft_accounts(access_token: str, refresh_token: Optional[str]) -> List[Dict[str, Any]]:
+async def _discover_microsoft_accounts(
+    access_token: str,
+    refresh_token: Optional[str],
+    customer_id: Optional[str] = None,
+) -> List[Dict[str, Any]]:
     sdk_error = ""
     try:
-        accounts = await asyncio.to_thread(_discover_microsoft_accounts_sdk_sync, access_token, refresh_token)
+        accounts = await asyncio.to_thread(
+            _discover_microsoft_accounts_sdk_sync, access_token, refresh_token, customer_id
+        )
         if accounts:
             return accounts
     except Exception as exc:
@@ -998,6 +1026,8 @@ async def discover_ad_accounts(
     query: str = "",
     access_token: Optional[str] = None,
     refresh_token: Optional[str] = None,
+    login_customer_id: Optional[str] = None,
+    microsoft_customer_id: Optional[str] = None,
 ) -> List[Dict[str, Any]]:
     platform_key = (platform or "").strip().lower()
 
@@ -1026,14 +1056,16 @@ async def discover_ad_accounts(
             raise ConnectorConfigError("Missing TikTok access token for this connection.")
         accounts = await _discover_tiktok_accounts(access_token)
     elif platform_key == "google":
-        accounts = await _discover_google_accounts(refresh_token)
+        accounts = await _discover_google_accounts(refresh_token, login_customer_id)
     elif platform_key == "google_analytics":
         accounts = await _discover_google_analytics_properties(refresh_token)
     elif platform_key == "microsoft":
         if not access_token:
             raise ConnectorConfigError("Missing Microsoft access token for this connection.")
         try:
-            accounts = await _discover_microsoft_accounts(access_token, refresh_token)
+            accounts = await _discover_microsoft_accounts(
+                access_token, refresh_token, microsoft_customer_id
+            )
         except ConnectorError:
             raise
         except Exception as exc:
@@ -1117,11 +1149,12 @@ async def _fetch_google_performance(
     refresh_token: Optional[str],
     start_date: Optional[str] = None,
     end_date: Optional[str] = None,
+    login_customer_id: Optional[str] = None,
 ) -> pd.DataFrame:
     developer_token = _required_env("GOOGLE_ADS_DEVELOPER_TOKEN")
     client_id = _required_env("GOOGLE_ADS_CLIENT_ID")
     client_secret = _required_env("GOOGLE_ADS_CLIENT_SECRET")
-    final_refresh_token = str(refresh_token or os.getenv("GOOGLE_ADS_REFRESH_TOKEN", "")).strip()
+    final_refresh_token = str(refresh_token or "").strip()
     if not final_refresh_token:
         raise ConnectorConfigError("Missing Google Ads refresh token for this connection.")
 
@@ -1132,7 +1165,7 @@ async def _fetch_google_performance(
         "refresh_token": final_refresh_token,
         "use_proto_plus": True,
     }
-    login_customer_id = os.getenv("GOOGLE_ADS_LOGIN_CUSTOMER_ID", "").strip()
+    login_customer_id = str(login_customer_id or "").strip()
     if login_customer_id:
         credentials["login_customer_id"] = _strip_google_customer_id(login_customer_id)
 
@@ -1625,11 +1658,13 @@ def _fetch_microsoft_performance_sync(
 
     developer_token = _required_env("MICROSOFT_DEVELOPER_TOKEN")
     client_id = _required_env("MICROSOFT_CLIENT_ID")
-    customer_id = (microsoft_customer_id or "").strip() or os.getenv("MICROSOFT_CUSTOMER_ID", "").strip()
+    # Per-connection only. Falling back to a process-wide customer id would run
+    # this tenant's sync in whatever customer context the host is configured for.
+    customer_id = (microsoft_customer_id or "").strip()
     if not customer_id:
         raise ConnectorConfigError(
-            "Missing Microsoft customer ID for this account. Re-discover the Microsoft ad accounts "
-            "and re-save the account selection, or set MICROSOFT_CUSTOMER_ID if you intend to use a single customer context."
+            "Missing Microsoft customer ID for this account. Re-discover the Microsoft ad "
+            "accounts and re-save the account selection for this connection."
         )
 
     try:
@@ -1750,10 +1785,13 @@ async def fetch_platform_data(
     microsoft_customer_id: Optional[str] = None,
     start_date: Optional[str] = None,
     end_date: Optional[str] = None,
+    google_login_customer_id: Optional[str] = None,
 ) -> pd.DataFrame:
     platform_key = (platform or "").strip().lower()
     if platform_key == "google":
-        return await _fetch_google_performance(account_id, refresh_token, start_date, end_date)
+        return await _fetch_google_performance(
+            account_id, refresh_token, start_date, end_date, google_login_customer_id
+        )
     if platform_key == "google_analytics":
         return await _fetch_google_analytics(account_id, refresh_token, start_date, end_date)
     if platform_key == "meta":

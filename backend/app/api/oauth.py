@@ -482,6 +482,16 @@ async def callback(
     account_id = str(primary_account.get("id")) if primary_account else ""
     account_name = str(primary_account.get("name")) if primary_account else f"{platform.capitalize()} Account"
 
+    # Capture the manager context this connection reaches its accounts through,
+    # so syncs never have to guess it from the environment. Empty means the
+    # account is directly accessible and needs no manager header.
+    login_customer_id = ""
+    for acct in discovered_accounts:
+        candidate = str(acct.get("login_customer_id") or "").strip()
+        if candidate:
+            login_customer_id = candidate
+            break
+
     expires_at = datetime.utcnow() + timedelta(seconds=tokens.get("expires_in", 3600))
 
     # 2. Save to DB (update existing connection on reconnect, otherwise create new)
@@ -501,6 +511,7 @@ async def callback(
         existing.refresh_token = encrypt_token(refresh_token)
         existing.available_accounts = discovered_accounts
         existing.selected_account_ids = [account_id] if account_id else []
+        existing.login_customer_id = login_customer_id or None
         existing.expires_at = expires_at
     else:
         new_conn = models.Connection(
@@ -513,6 +524,7 @@ async def callback(
             refresh_token=encrypt_token(refresh_token),
             available_accounts=discovered_accounts,
             selected_account_ids=[account_id] if account_id else [],
+            login_customer_id=login_customer_id or None,
             expires_at=expires_at,
         )
         db.add(new_conn)
