@@ -19,6 +19,7 @@ from datetime import datetime, timedelta
 from typing import Optional
 
 from fastapi import APIRouter, Depends, HTTPException
+from fastapi.responses import Response
 from pydantic import BaseModel
 from sqlalchemy.orm import Session
 
@@ -26,6 +27,7 @@ from app import models
 from app.api.auth import get_current_user, record_audit
 from app.api.endpoints import _serialize_report
 from app.database import get_db
+from app.services import pdf as pdf_service
 
 router = APIRouter()
 
@@ -218,3 +220,121 @@ def view_public_share(token: str, db: Session = Depends(get_db)):
             "view_count": link.view_count,
         },
     }
+
+
+# --- PDF ---------------------------------------------------------------------
+#
+# Headless Chrome has no session and cannot carry a bearer token, so every PDF is
+# rendered from the *public* print route. For an authenticated caller that means
+# minting a deliberately short-lived link, rendering it, and revoking it straight
+# away. The alternative -- teaching the renderer to authenticate -- would put a
+# credential inside a browser we launch on demand, which is a far worse trade.
+
+EPHEMERAL_PDF_TTL_SECONDS = 300
+
+
+def _mint_ephemeral_link(db: Session, report: models.Report, subject: str) -> tuple[models.ReportShareLink, str]:
+    token = secrets.token_urlsafe(32)
+    link = models.ReportShareLink(
+        workspace_id=report.workspace_id,
+        report_id=report.id,
+        token_hash=_hash_token(token),
+        created_by_subject=subject,
+        expires_at=datetime.utcnow() + timedelta(seconds=EPHEMERAL_PDF_TTL_SECONDS),
+        is_active=1,
+    )
+    db.add(link)
+    db.commit()
+    db.refresh(link)
+    return link, token
+
+
+def _render_or_503(token: str, filename: str) -> Response:
+    # Called from a sync endpoint, which FastAPI runs in a threadpool worker with
+    # no event loop -- which is exactly what Playwright's sync API requires.
+    try:
+        data = pdf_service.render_share_pdf(token)
+    except pdf_service.PdfUnavailable as exc:
+        raise HTTPException(
+            status_code=503,
+            detail=f"PDF rendering is not available on this server. {exc}",
+        )
+    except pdf_service.PdfRenderError as exc:
+        raise HTTPException(status_code=502, detail=str(exc))
+
+    return Response(
+        content=data,
+        media_type="application/pdf",
+        headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+    )
+
+
+@router.get("/share/{token}/pdf")
+def download_public_share_pdf(token: str, db: Session = Depends(get_db)):
+    """Anonymous PDF of a shared report.
+
+    Enforces the same revoked/expired rules as the HTML view -- this must never
+    become a way to read a link someone has already revoked.
+    """
+    link = (
+        db.query(models.ReportShareLink)
+        .filter(models.ReportShareLink.token_hash == _hash_token(token))
+        .first()
+    )
+    if not link:
+        raise HTTPException(status_code=404, detail="Share link not found.")
+    if not link.is_active:
+        raise HTTPException(status_code=410, detail="Share link has been revoked.")
+    if link.expires_at < datetime.utcnow():
+        raise HTTPException(status_code=410, detail="Share link has expired.")
+
+    report = db.query(models.Report).filter(models.Report.id == link.report_id).first()
+    if not report:
+        raise HTTPException(status_code=404, detail="Underlying report no longer exists.")
+
+    filename = pdf_service.pdf_filename(report.current_period_label, report.id)
+    return _render_or_503(token, filename)
+
+
+@router.get("/workspaces/{workspace_id}/reports/{report_id}/pdf")
+def download_report_pdf(
+    workspace_id: int,
+    report_id: int,
+    db: Session = Depends(get_db),
+    user_id: str = Depends(get_current_user),
+):
+    """PDF of a report for anyone who can already read it.
+
+    Deliberately as permissive as CSV export: a viewer who can read the report
+    on screen gains nothing by being denied the same content as a PDF. Minting
+    a *share link* stays owner/admin-only, which is the decision that actually
+    exposes data to people outside the workspace.
+    """
+    _require_role(db, workspace_id, user_id, {"owner", "admin", "member", "viewer"})
+
+    report = (
+        db.query(models.Report)
+        .filter(models.Report.id == report_id, models.Report.workspace_id == workspace_id)
+        .first()
+    )
+    if not report:
+        raise HTTPException(status_code=404, detail="Report not found.")
+
+    link, token = _mint_ephemeral_link(db, report, f"system:pdf:{user_id}")
+    try:
+        filename = pdf_service.pdf_filename(report.current_period_label, report.id)
+        return _render_or_503(token, filename)
+    finally:
+        # Revoke whether or not rendering succeeded: the link exists only for the
+        # duration of one render, and a failed render must not leave one live.
+        link.is_active = 0
+        record_audit(
+            db,
+            workspace_id=workspace_id,
+            actor_subject=user_id,
+            action="report.pdf",
+            payload={"report_id": report_id},
+        )
+        # record_audit leaves committing to the caller, so this one commit
+        # persists both the revocation and the audit entry.
+        db.commit()

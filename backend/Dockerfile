@@ -22,6 +22,11 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
+# Chromium + its shared libraries, for server-rendered report PDFs. This is the
+# heaviest thing in the image (~400MB); if PDF rendering is not wanted, drop this
+# line and the /pdf endpoints degrade to a clear 503 rather than failing oddly.
+RUN playwright install --with-deps chromium
+
 COPY . .
 
 EXPOSE 8000

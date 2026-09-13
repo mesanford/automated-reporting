@@ -22,3 +22,6 @@ google-cloud-logging==3.16.0
 slowapi==0.1.10
 pytest==9.1.1
 pytest-asyncio==1.4.0
+# Headless Chromium for server-rendered report PDFs (app/services/pdf.py).
+# The browser binary is installed separately in the Dockerfile.
+playwright==1.56.0

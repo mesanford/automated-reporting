@@ -121,6 +121,27 @@ def run_preflight(env: Mapping[str, str] | None = None) -> PreflightReport:
             "Real browsers from your deployed frontend will be rejected. Set this.",
         ))
 
+    # 4b. PDF rendering needs a Chromium build in the image. Not fatal -- the
+    # endpoints return a clear 503 without it -- but silently losing the client
+    # deliverable is worth a warning at boot rather than a support ticket.
+    if prod and not env.get("DISABLE_PDF_RENDERING"):
+        try:
+            from app.services.pdf import is_available as _pdf_available
+
+            if not _pdf_available():
+                report.findings.append(Finding(
+                    "warning", "PDF_RENDERING_UNAVAILABLE",
+                    "Chromium is not available, so report PDF downloads will return "
+                    "503. Add `playwright install --with-deps chromium` to the image, "
+                    "or set DISABLE_PDF_RENDERING=1 to silence this.",
+                ))
+        except Exception:
+            report.findings.append(Finding(
+                "warning", "PDF_RENDERING_UNAVAILABLE",
+                "Could not determine Chromium availability; report PDF downloads "
+                "may return 503.",
+            ))
+
     # 5. Encryption key must exist in production.
     if prod and not (
         env.get("ENCRYPTION_KEY")

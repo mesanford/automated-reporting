@@ -28,6 +28,7 @@ export default function ReportsListPage() {
   const [rows, setRows] = useState<ReportListRow[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
+  const [pdfBusy, setPdfBusy] = useState<number | null>(null);
 
   const [from, setFrom] = useState('');
   const [to, setTo] = useState('');
@@ -81,6 +82,33 @@ export default function ReportsListPage() {
     a.click();
     a.remove();
     URL.revokeObjectURL(url);
+  }
+
+  /** Server-rendered PDF, so what the operator downloads is the same file a
+   * client receives from a share link. Falls back to the browser print route
+   * when the server has no Chromium (503). */
+  async function downloadPdf(reportId: number) {
+    if (!active) return;
+    setPdfBusy(reportId);
+    try {
+      const res = await apiFetch(`/api/workspaces/${active.id}/reports/${reportId}/pdf`);
+      if (!res.ok) {
+        window.open(`/reports/${reportId}/print`, '_blank', 'noopener');
+        return;
+      }
+      const blob = await res.blob();
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+      const cd = res.headers.get('Content-Disposition') || '';
+      a.download = cd.match(/filename="([^"]+)"/)?.[1] || `report-${reportId}.pdf`;
+      document.body.appendChild(a);
+      a.click();
+      a.remove();
+      URL.revokeObjectURL(url);
+    } finally {
+      setPdfBusy(null);
+    }
   }
 
   return (
@@ -208,13 +236,14 @@ export default function ReportsListPage() {
                           <Download size={12} />
                           CSV
                         </button>
-                        <Link
-                          href={`/reports/${r.id}/print`}
-                          target="_blank"
-                          className="inline-flex items-center gap-1 text-blue-600 hover:text-blue-800 text-xs font-bold"
+                        <button
+                          onClick={() => downloadPdf(r.id)}
+                          disabled={pdfBusy === r.id}
+                          className="inline-flex items-center gap-1 text-blue-600 hover:text-blue-800 text-xs font-bold disabled:opacity-60"
                         >
-                          PDF
-                        </Link>
+                          <Download size={12} />
+                          {pdfBusy === r.id ? '…' : 'PDF'}
+                        </button>
                       </div>
                     </td>
                   </tr>

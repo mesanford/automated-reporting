@@ -3,7 +3,6 @@
 import React, { useEffect, useState } from 'react';
 import { useParams } from 'next/navigation';
 import ReactMarkdown from 'react-markdown';
-import Link from 'next/link';
 import { AlertTriangle, Download, FileText, Lock } from 'lucide-react';
 
 const API_BASE = process.env.NEXT_PUBLIC_API_BASE_URL ?? 'http://localhost:8000';
@@ -43,6 +42,32 @@ type State =
 export default function PublicSharePage() {
   const params = useParams<{ token: string }>();
   const [state, setState] = useState<State>({ kind: 'loading' });
+  const [downloading, setDownloading] = useState(false);
+
+  async function handleDownload() {
+    if (!params?.token) return;
+    setDownloading(true);
+    try {
+      const res = await fetch(`${API_BASE}/api/share/${params.token}/pdf`);
+      if (!res.ok) {
+        // 503 means the server has no Chromium; the browser print route still
+        // produces a usable PDF, just not a byte-identical one.
+        window.open(`/share/${params.token}/print`, '_blank', 'noopener');
+        return;
+      }
+      const blob = await res.blob();
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = filenameFrom(res) || 'report.pdf';
+      document.body.appendChild(a);
+      a.click();
+      a.remove();
+      URL.revokeObjectURL(url);
+    } finally {
+      setDownloading(false);
+    }
+  }
 
   useEffect(() => {
     if (!params?.token) return;
@@ -97,17 +122,17 @@ export default function PublicSharePage() {
           )}
         </div>
         <div className="flex items-center gap-3">
-          {/* Same token, print-optimised layout. Opens in a new tab so the
-              recipient keeps this page after the print dialog closes. */}
-          <Link
-            href={`/share/${params.token}/print`}
-            target="_blank"
-            rel="noopener noreferrer"
-            className="inline-flex items-center gap-2 px-4 py-2 rounded-lg bg-blue-600 text-white text-sm font-bold hover:bg-blue-700"
+          {/* Server-rendered PDF, so every recipient gets an identical file
+              regardless of browser. If the server has no Chromium it answers
+              503 and we fall back to the browser's own print dialog. */}
+          <button
+            onClick={handleDownload}
+            disabled={downloading}
+            className="inline-flex items-center gap-2 px-4 py-2 rounded-lg bg-blue-600 text-white text-sm font-bold hover:bg-blue-700 disabled:opacity-60"
           >
             <Download size={16} />
-            Download PDF
-          </Link>
+            {downloading ? 'Preparing…' : 'Download PDF'}
+          </button>
           <div className="text-xs text-slate-400 text-right">
             Expires {new Date(state.data.share.expires_at).toLocaleDateString()}
             <br />
@@ -185,6 +210,13 @@ export default function PublicSharePage() {
       </footer>
     </Shell>
   );
+}
+
+/** Pull the server-supplied filename out of Content-Disposition. */
+function filenameFrom(res: Response): string | null {
+  const cd = res.headers.get('Content-Disposition') || '';
+  const m = cd.match(/filename="([^"]+)"/);
+  return m ? m[1] : null;
 }
 
 function Shell({ children }: { children: React.ReactNode }) {
